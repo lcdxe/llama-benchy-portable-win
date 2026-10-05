@@ -1,0 +1,48 @@
+name: smoke
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile all sources
+        run: python -m compileall -q llama_benchy gui tools
+
+      - name: CLI smoke test
+        run: python -m llama_benchy --help
+
+      - name: Corpus + tokenizer are bundled (offline path works)
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from llama_benchy import corpus
+          assets = Path(corpus._ASSETS_DIR)
+          book = Path("data/book.txt")
+          assert assets.is_dir() and (assets / "gpt2_tokenizer.json").is_file()
+          assert book.is_file() and book.stat().st_size > 100_000
+          print("bundled tokenizer:", assets / "gpt2_tokenizer.json")
+          print("bundled corpus:", book, book.stat().st_size, "bytes")
+          PY
+
+      - name: Launchers must stay pure ASCII
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          for bat in Path(".").glob("*.bat"):
+            data = bat.read_bytes()
+            bad = [b for b in data if b > 127]
+            assert not bad, f"{bat} contains non-ASCII bytes"
+            print(f"{bat}: pure ASCII, {len(data)} bytes")
+          PY

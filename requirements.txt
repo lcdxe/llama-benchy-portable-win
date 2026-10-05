@@ -1,0 +1,9 @@
+openai
+tokenizers
+transformers>=5.2.0
+tabulate
+numpy
+requests
+asyncio
+aiohttp
+pydantic>=2.12.5

@@ -1,0 +1,28 @@
+# Bundled portable runtime (distributed as a Release asset, never committed)
+python/
+
+# Runtime artifacts written by the tool / GUI
+results/
+data/cache/
+.hf/
+.tmp/
+gui/runs/
+gui/batch.json
+gui/gui.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.env
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llama-benchy-portable"
+version = "0.0.0+local"
+description = "llama-bench style benchmarking tool for OpenAI-compatible LLM endpoints (offline, self-contained portable edition)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+  { name = "Eugene Rakhmatulin", url = "https://github.com/eugr/llama-benchy" },
+]
+keywords = ["llm", "benchmark", "llama.cpp", "vllm", "openai-compatible", "throughput", "portable"]
+dependencies = [
+  "openai",
+  "tokenizers",
+  "transformers>=5.2.0",
+  "tabulate",
+  "numpy",
+  "requests",
+  "asyncio",
+  "aiohttp",
+  "pydantic>=2.12.5",
+]
+
+[project.scripts]
+llama-benchy = "llama_benchy.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/eugr/llama-benchy"
+
+[tool.hatch.build.targets.wheel]
+packages = ["llama_benchy"]
