@@ -52,7 +52,7 @@ if (Test-Path $runtime) {
     $runtimeNote = "runtime NOT found ($runtime) - zip contains source only"
 }
 
-Compress-Archive -Path (Join-Path $staging $name) -DestinationPath $OutFile -CompressionLevel Optimal
+Compress-Archive -Path (Join-Path $staging $name) -DestinationPath $OutFile -CompressionLevel Optimal -Force
 Remove-Item -Recurse -Force $staging
 
 "zip: $OutFile"
