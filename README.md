@@ -1,3 +1,5 @@
+**中文** · [EN](README.en.md)
+
 # llama-benchy — 离线自包含便携版（Windows x64）
 
 面向**任意 OpenAI 兼容端点**（llama.cpp、vLLM、SGLang 等）的 llama-bench 风格基准测试工具，
@@ -13,7 +15,7 @@
 上游项目：[eugr/llama-benchy](https://github.com/eugr/llama-benchy)。
 本分支**只改动离线/便携行为** —— 测试矩阵、指标与 CLI 参数与上游 `main` 完全一致。
 
-> **English version:** [README.en.md](README.en.md) · 完整中文参数表：[docs/params.zh.md](docs/params.zh.md)
+> 完整中文参数表：[docs/params.zh.md](docs/params.zh.md)
 
 ---
 
@@ -117,15 +119,6 @@ python -m llama_benchy --base-url http://127.0.0.1:8080/v1 --model qwen \
 缩放字号与 padding，最后用实测的固定开销推导窗口高度。状态栏右下角有**界面缩放**下拉
 （自动 / 小 / 标准 / 大），多显示器或特殊缩放时可手动覆盖。
 
-### 日志
-
-没有日志面板：当前阶段显示在底部状态栏，每个前置命令 / 测试弹出独立控制台窗口，
-`gui\runs\<名称>_<时间>.log` 记录命令与退出码，GUI 自身崩溃写入 `gui\gui.log`。
-
-> GUI 界面文字目前只有中文。
-> 截图是用 `tools/mock_server.py`（一个假的 OpenAI 兼容服务）配合
-> `tools/gui_screenshot.py` 生成的，不需要真实推理服务也能复现。
-
 ---
 
 ## CLI 参数
@@ -134,7 +127,7 @@ python -m llama_benchy --base-url http://127.0.0.1:8080/v1 --model qwen \
 python -m llama_benchy --base-url URL [options]
 ```
 
-完整中文参数表见 [docs/params.zh.md](docs/params.zh.md)，以下与英文版逐项一致。
+完整中文参数表见 [docs/params.zh.md](docs/params.zh.md) · [EN](README.en.md#cli-parameters)
 
 ### 连接与模型
 

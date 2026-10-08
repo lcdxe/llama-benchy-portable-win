@@ -1,3 +1,5 @@
+**EN** · [中文](README.md)
+
 # llama-benchy — Offline Self-Contained Portable Edition
 
 llama-bench style benchmarking tool for **any OpenAI-compatible endpoint**
@@ -15,8 +17,7 @@ Upstream project: [eugr/llama-benchy](https://github.com/eugr/llama-benchy).
 This fork changes **only the offline/portable behaviour** — the test matrix, the
 metrics and the CLI surface are identical to upstream `main`.
 
-> **Primary documentation (Chinese):** [README.md](README.md) · full Chinese
-> parameter reference: [docs/params.zh.md](docs/params.zh.md)
+> Full Chinese parameter reference: [docs/params.zh.md](docs/params.zh.md)
 
 ---
 
@@ -138,17 +139,6 @@ real DPI, scales fonts and padding by the screen's logical resolution, and then 
 window height from the measured fixed overhead. The status bar has an **interface scale**
 dropdown (auto / small / standard / large) for multi-monitor or unusual scaling setups.
 
-### Logging
-
-There is no log panel: the current stage is shown in the status bar, every pre-command /
-test opens its own console window, `gui\runs\<name>_<time>.log` records command + exit code,
-and GUI crashes go to `gui\gui.log`.
-
-> The GUI labels are currently Chinese-only.
-> The screenshots were produced with `tools/mock_server.py` (a fake OpenAI-compatible
-> server) plus `tools/gui_screenshot.py`, so they can be reproduced without a real
-> inference server.
-
 ---
 
 ## CLI parameters
@@ -156,6 +146,8 @@ and GUI crashes go to `gui\gui.log`.
 ```
 python -m llama_benchy --base-url URL [options]
 ```
+
+Full Chinese parameter reference: [docs/params.zh.md](docs/params.zh.md)
 
 ### Connection & model
 
