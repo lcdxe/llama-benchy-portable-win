@@ -1,6 +1,9 @@
 # Bundled portable runtime (distributed as a Release asset, never committed)
 python/
 
+# Local development notes (not published)
+项目开发说明.md
+
 # Runtime artifacts written by the tool / GUI
 results/
 data/cache/

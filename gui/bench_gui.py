@@ -6,13 +6,13 @@ llama-benchy GUI - 绿色便携版
 
 功能:
   * 测试页: 快速调参(全参数表单 + 预设), 一键运行 llama-benchy(子进程),
-             结果自动保存到 results\<名称>.json (同名文件不覆盖: 已存在时自动改用 <名称>_2.json, <名称>_3.json …); 运行时弹出独立控制台窗口实时显示输出,
+             结果自动保存到 results\<模型名>\<名称>.json (按 --model 分目录; 同名文件不覆盖: 已存在时自动改用 <名称>_2.json, <名称>_3.json …); 运行时弹出独立控制台窗口实时显示输出,
              命令/退出码记录在 gui\runs\<名称>_<时间>.log
   * 预设页: 命名预设列表(gui\batch.json), 每个预设 = 一种服务器配置(如 MTP N);
              选中 → 「运行该预设」逐个手动运行(前置命令可选, 用于自动重启/切换服务器),
-             结果自动存 results\<名称>.json; 跑完到对比页多选合并对比
+             结果自动存 results\<模型名>\<名称>.json; 跑完到对比页多选合并对比
   * 对比页: 加载多份已保存的 JSON 结果, 按测试形状合并对比表(含相对基线的 Δ%),
-             基线可选, 折线/柱状图, 导出对比 CSV
+             基线可选, 折线/柱状图, 导出对比 CSV; 勾选后可「删除选中」结果文件(先备份到 results\deleted\)
 
 用法: GUI.bat 或 python\\python.exe gui\\bench_gui.py
 """
@@ -22,6 +22,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -34,26 +35,25 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 from tkinter import font as tkfont
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ui_theme import (apply_theme, style_dialog, BG, BG_PANEL, BG_FIELD, BORDER,
+from ui_theme import (apply_theme, style_dialog, detect_display, set_scale,
+                      BG, BG_PANEL, BG_FIELD, BG_HEAD, BORDER,
                       FG, FG_DIM, ACCENT, GOOD, BAD, CHART_COLORS, CHART_LINE_WIDTH,
                       FONT as _UI_FONT, FONT_BOLD, FONT_MONO)
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))   # gui\
-GREEN_DIR = os.path.dirname(APP_DIR)                   # repo root / portable bundle root
+APP_DIR = os.path.dirname(os.path.abspath(__file__))   # gui/ (bundle or repo)
+GREEN_DIR = os.path.dirname(APP_DIR)                   # bundle root / repo root
 
-# Interpreter priority: bundled portable runtime > local .venv (bootstrap.bat) >
-# the interpreter that launched this script.
+# Interpreter lookup: bundled portable runtime -> bootstrap-created .venv ->
+# whatever python is running this GUI. Keeps the GUI usable for plain clones.
 _BUNDLED_PY = os.path.join(GREEN_DIR, "python", "python.exe")
 _VENV_PY = os.path.join(GREEN_DIR, ".venv", "Scripts", "python.exe")
-if os.path.exists(_BUNDLED_PY):
+if os.path.isfile(_BUNDLED_PY):
     PYTHON_EXE = _BUNDLED_PY
-elif os.path.exists(_VENV_PY):
+elif os.path.isfile(_VENV_PY):
     PYTHON_EXE = _VENV_PY
 else:
     PYTHON_EXE = sys.executable
 
-# Package source: the portable bundle keeps it under llama-benchy\, the plain repo
-# layout has llama_benchy\ at the repo root. Both work.
 _BUNDLED_SRC = os.path.join(GREEN_DIR, "llama-benchy")
 SRC_DIR = _BUNDLED_SRC if os.path.isdir(os.path.join(_BUNDLED_SRC, "llama_benchy")) else GREEN_DIR
 RESULTS_DIR = os.path.join(GREEN_DIR, "results")
@@ -61,8 +61,20 @@ RESULTS_DIR = os.path.join(GREEN_DIR, "results")
 BATCH_FILE = os.path.join(APP_DIR, "batch.json")
 RUNS_DIR = os.path.join(APP_DIR, "runs")          # 每次运行的完整/故障日志
 
-FONT = ("Microsoft YaHei UI", 9)
+FONT = _UI_FONT
 COLORS = CHART_COLORS   # 深色主题下的高对比系列色(见 ui_theme.py)
+
+# 手动覆盖自动探测的界面缩放(相对 11 号基准字)
+SCALE_PRESETS = {"自动": None, "小": 0.78, "标准": 1.0, "大": 1.18}
+
+
+def _sync_fonts():
+    """ui_theme.set_scale() 改的是 ui_theme 里的常量; 把本模块的引用同步过去。"""
+    global FONT, _UI_FONT, FONT_BOLD, FONT_MONO
+    import ui_theme
+    FONT = _UI_FONT = ui_theme.FONT
+    FONT_BOLD = ui_theme.FONT_BOLD
+    FONT_MONO = ui_theme.FONT_MONO
 
 # ---------------------------------------------------------------- 预设 ----
 
@@ -71,35 +83,36 @@ DEFAULT_PRESETS = {
         base_url="http://127.0.0.1:8080/v1", api_key="", model="qwen38",
         served_model_name="", tokenizer="",
         pp="512", tg="512", depth="512 4096 8096", concurrency="",
-        runs="2", warmup_runs="",
+        runs="3", warmup_runs="",
         latency_mode="generation", prefix_caching=False, no_cache=False,
-        exact_tg=False, skip_coherence=False, no_warmup=False,
-        no_adapt_prompt=False, ts_total=False, ts_all=False, wait_port=True),
+        exact_tg=True, skip_coherence=False, no_warmup=False,
+        no_adapt_prompt=False, exit_on_fail=False, ts_total=False, ts_all=False,
+        pre_cmd="", post_cmd="", extra_body="", book_url="", format="json",
+        wait_port=True, enabled=True),
     "并发测试": dict(
         base_url="http://127.0.0.1:8080/v1", api_key="", model="qwen38",
         served_model_name="", tokenizer="",
         pp="512", tg="128", depth="512 4096 8096 16384", concurrency="4",
-        runs="1", warmup_runs="",
+        runs="2", warmup_runs="",
         latency_mode="generation", prefix_caching=False, no_cache=False,
-        exact_tg=False, skip_coherence=False, no_warmup=False,
-        no_adapt_prompt=False, ts_total=False, ts_all=False, wait_port=True),
+        exact_tg=True, skip_coherence=False, no_warmup=False,
+        no_adapt_prompt=False, exit_on_fail=False, ts_total=False, ts_all=False,
+        pre_cmd="", post_cmd="", extra_body="", book_url="", format="json",
+        wait_port=True, enabled=True),
     "缓存命中": dict(
         base_url="http://127.0.0.1:8080/v1", api_key="", model="qwen38",
         served_model_name="", tokenizer="",
         pp="", tg="", depth="32768 65536", concurrency="",
         runs="3", warmup_runs="",
         latency_mode="generation", prefix_caching=True, no_cache=False,
-        exact_tg=False, skip_coherence=False, no_warmup=False,
-        no_adapt_prompt=False, ts_total=False, ts_all=False, wait_port=True),
+        exact_tg=True, skip_coherence=False, no_warmup=False,
+        no_adapt_prompt=False, exit_on_fail=False, ts_total=False, ts_all=False,
+        pre_cmd="", post_cmd="", extra_body="", book_url="", format="json",
+        wait_port=True, enabled=True),
 }
 
-_SINGLE_STREAM = dict(
-    base_url="http://127.0.0.1:8080/v1", api_key="", model="qwen38",
-    served_model_name="", tokenizer="", pp="512", tg="512", depth="512 4096 8096",
-    concurrency="", runs="2", warmup_runs="", latency_mode="generation",
-    prefix_caching=False, no_cache=False, exact_tg=False, skip_coherence=False,
-    no_warmup=False, no_adapt_prompt=False, ts_total=False, ts_all=False, wait_port=True)
-DEFAULT_BATCH = [dict(_SINGLE_STREAM, name=f"mtp{i}", pre_cmd="", enabled=True)
+_SINGLE_STREAM = dict(DEFAULT_PRESETS["单流速度"])
+DEFAULT_BATCH = [dict(_SINGLE_STREAM, name=f"mtp{i}", pre_cmd="")
                  for i in (3, 4, 5, 6)]
 
 # ---------------------------------------------------------------- 解析 ----
@@ -178,10 +191,10 @@ def parse_report_data(data):
     return meta, rows
 
 
-def load_report(path):
+def load_report(path, label=None):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    label = os.path.splitext(os.path.basename(path))[0]
+    label = label or os.path.splitext(os.path.basename(path))[0]
     return label, *parse_report_data(data)
 
 
@@ -196,15 +209,66 @@ def fmt_val(field, v):
 
 # ---------------------------------------------------------------- 命令 ----
 
-def unique_result_path(name, ext):
+def model_dir(model):
+    """按模型名建子目录 results\\<model>\\；模型名为空时用「未命名模型」。"""
+    m = re.sub(r'[\\/:*?"<>|]', "_", (model or "").strip()) or "未命名模型"
+    return os.path.join(RESULTS_DIR, m)
+
+
+def result_base_dir(p):
+    """本次运行结果应存放的目录: 按 --model(或 served_model_name) 分目录。"""
+    return model_dir(p.get("model", "") or p.get("served_model_name", ""))
+
+
+def unique_result_path(name, ext, base_dir=None):
     """结果保存路径: 同名文件不覆盖旧文件, 依次尝试 <名称>, <名称>_2, <名称>_3 …"""
+    base = base_dir or RESULTS_DIR
     safe = re.sub(r'[\\/:*?"<>|]', "_", name)
-    path = os.path.join(RESULTS_DIR, safe + ext)
+    path = os.path.join(base, safe + ext)
     k = 2
     while os.path.exists(path):
-        path = os.path.join(RESULTS_DIR, f"{safe}_{k}{ext}")
+        path = os.path.join(base, f"{safe}_{k}{ext}")
         k += 1
     return path
+
+
+def iter_result_files():
+    """列出 results\\ 下(含按模型建的子目录)所有 json 结果，跳过 deleted\\ 备份。"""
+    out = []
+    if not os.path.isdir(RESULTS_DIR):
+        return out
+    for root, dirs, files in os.walk(RESULTS_DIR):
+        dirs[:] = [d for d in dirs if d.lower() != "deleted"]
+        for fn in files:
+            if fn.lower().endswith(".json"):
+                out.append(os.path.join(root, fn))
+    return out
+
+
+def migrate_legacy_results():
+    """把 results\\ 根目录里的旧结果文件移入 results\\<model>\\ 子目录。
+    模型名取自 JSON 的 model 字段；取不到则归入「未命名模型」。返回迁移条数。"""
+    n = 0
+    for fn in sorted(os.listdir(RESULTS_DIR)) if os.path.isdir(RESULTS_DIR) else []:
+        src = os.path.join(RESULTS_DIR, fn)
+        if not os.path.isfile(src) or not fn.lower().endswith((".json", ".md", ".csv")):
+            continue
+        model = ""
+        if fn.lower().endswith(".json"):
+            try:
+                with open(src, "r", encoding="utf-8") as f:
+                    model = (json.load(f).get("model") or "").strip()
+            except (OSError, ValueError):
+                model = ""
+        base = model_dir(model)
+        try:
+            os.makedirs(base, exist_ok=True)
+            dst = unique_result_path(os.path.splitext(fn)[0], os.path.splitext(fn)[1], base)
+            shutil.move(src, dst)
+            n += 1
+        except OSError:
+            continue
+    return n
 
 
 def build_argv(p):
@@ -240,6 +304,16 @@ def build_argv(p):
         a.append("--no-warmup")
     if p.get("no_adapt_prompt"):
         a.append("--no-adapt-prompt")
+    if p.get("exit_on_fail"):
+        a.append("--exit-on-first-fail")
+    if p.get("no_results_on_fail"):
+        a.append("--no-results-on-fail")
+    if p.get("extra_body", "").strip():
+        a += ["--extra-body", p["extra_body"].strip()]
+    if p.get("book_url", "").strip():
+        a += ["--book-url", p["book_url"].strip()]
+    if p.get("post_cmd", "").strip():
+        a += ["--post-run-cmd", p["post_cmd"].strip()]
     if p.get("ts_total"):
         a.append("--save-total-throughput-timeseries")
     if p.get("ts_all"):
@@ -247,11 +321,26 @@ def build_argv(p):
     name = p.get("result_name", "").strip()
     if name:
         ext = {"json": ".json", "md": ".md", "csv": ".csv"}[p.get("format", "json")]
-        path = unique_result_path(name, ext)
+        base = result_base_dir(p)
+        try:
+            os.makedirs(base, exist_ok=True)
+        except OSError:
+            base = RESULTS_DIR
+        path = unique_result_path(name, ext, base)
         p["result_path"] = path          # 实际保存路径(完成提示按此显示)
         a += ["--save-result", path,
               "--format", p.get("format", "json")]
     return a
+
+
+def expected_points(p):
+    """估算测试点数量(笛卡尔积 depth×pp×tg×concurrency)。
+    留空时按上游默认: pp=[2048] tg=[32] depth=[0] concurrency=[1]。"""
+    def cnt(key, default):
+        vals = [v for v in (p.get(key) or "").split() if v]
+        return len(vals) or len(default)
+    return (cnt("pp", [2048]) * cnt("tg", [32]) * cnt("depth", [0])
+            * cnt("concurrency", [1]))
 
 
 def port_open(host, port, timeout=1.5):
@@ -275,9 +364,23 @@ class BenchGUI:
         self.cmp = None          # 当前对比模型 {labels, rows, meta}
         self._model_queries = {}  # token -> (目标变量, 按钮): 查询服务端模型名的在途请求
         root.title("llama-benchy 控制台 - 绿色便携版 v2")
-        root.geometry("1140x780")
-        root.minsize(1020, 640)
-        apply_theme(root)
+        # ---- 分辨率自适应 ----------------------------------------------------
+        # Tk 坐标是物理像素, 系统缩放(125%/150%)会让控件按 DPI 放大; 固定
+        # 1140x780 的窗口在 2K/1080p 上装不下内容(被裁切), 在 4K 上又偏小。
+        # 所以: 先探测屏幕 -> 按屏幕"逻辑分辨率"缩放字号 -> 窗口与内部高度
+        # 都按目标高度推导, 而不是写死像素。
+        self.sc, self.k, self.lw, self.lh = detect_display(root)
+        self._auto_k = self.k
+        self.fs = set_scale(self.k)
+        _sync_fonts()
+        apply_theme(root, self.k)
+        self._sw = root.winfo_screenwidth()
+        self._sh = root.winfo_screenheight()
+        self._target_w = max(720, min(int(1660 * self.sc * self.k), self._sw - 60))
+        self._target_h = max(520, min(int(1200 * self.sc * self.k), self._sh - 60))
+        root.geometry(f"{self._target_w}x{self._target_h}")
+        root.minsize(max(620, int(self._target_w * 0.55)), max(420, int(self._target_h * 0.55)))
+        self.var_scale = tk.StringVar(value="自动")
         try:
             root.option_add("*Font", _UI_FONT)
         except tk.TclError:
@@ -293,12 +396,18 @@ class BenchGUI:
         self._build_batch_tab()
         self._build_compare_tab()
 
-        sbar = ttk.Frame(root)
+        self.sbar = sbar = ttk.Frame(root)
         sbar.pack(fill="x", side="bottom")
         self.pbar = ttk.Progressbar(sbar, mode="indeterminate", length=180)
         self.pbar.pack(side="left", padx=(8, 6))
         self.status = ttk.Label(sbar, text="就绪", style="Status.TLabel")
         self.status.pack(side="left", fill="x", expand=True)
+        # 界面缩放: 自动按分辨率算, 也可以手动覆盖(多显示器/特殊缩放时)
+        self.cb_scale = ttk.Combobox(sbar, textvariable=self.var_scale, width=7, state="readonly",
+                                     values=list(SCALE_PRESETS))
+        self.cb_scale.pack(side="right")
+        self.cb_scale.bind("<<ComboboxSelected>>", self._apply_scale)
+        ttk.Label(sbar, text="界面缩放:", style="Dim.TLabel").pack(side="right", padx=(8, 2))
         self.root.after(100, self._poll_queue)
 
         self.batch = self._load_batch()
@@ -306,6 +415,7 @@ class BenchGUI:
 
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
         self._refresh_files()      # 启动即加载已保存的结果
+        self._fit_layout()         # 按屏幕分辨率最终确定窗口与内部高度
 
 
 
@@ -470,9 +580,101 @@ class BenchGUI:
 
     # ---------------------------------------------------------- 对比页 ----
 
+    def _adaptive_heights(self):
+        """按目标窗口高度推导: 勾选区高 / 图表高 / 表格行数。
+
+        固定部分(工具栏、筛选、控件、表头、状态栏)随字体线性增长, 其余空间
+        分配给勾选列表、表格和图表 —— 这样 1080p 也能完整显示, 4K 也不浪费。
+        """
+        h = self._target_h
+        try:
+            ls = tkfont.Font(font=_UI_FONT).metrics("linespace")
+        except Exception:
+            ls = 16
+        rowh = int(ttk.Style(self.root).lookup("Treeview", "rowheight") or 30)
+        fixed = 7 * (ls + 12)                       # 7 行固定控件
+        cb_h = max(56, min(200, int(h * 0.16)))
+        chart_h = max(170, min(420, int(h * 0.32)))
+        rows = (h - fixed - cb_h - chart_h) // rowh
+        return cb_h, chart_h, max(3, min(12, rows))
+
+    def _fit_layout(self):
+        """实测"不可压缩"的固定开销, 把剩余高度分配给 勾选区 / 表格 / 图表,
+        最后把窗口设为 min(内容自然尺寸, 屏幕-40)。这样 1080p 不裁切, 4K 不浪费。"""
+        root = self.root
+        root.update_idletasks()
+        rowh = int(ttk.Style(root).lookup("Treeview", "rowheight") or 30)
+        strip = max(24, self.nb.winfo_reqheight() - max(self.tab_cmp.winfo_reqheight(),
+                                                        self.tab_batch.winfo_reqheight()))
+        rows_now = int(self.tree["height"])
+        fixed = (self.top_frame.winfo_reqheight() + self.filt_frame.winfo_reqheight()
+                 + self.cb_canvas.winfo_reqheight() + self.lbl_meta.winfo_reqheight()
+                 + self.ctl_frame.winfo_reqheight() + self.lbl_explain.winfo_reqheight()
+                 + (self.tree_frame.winfo_reqheight() - rows_now * rowh)
+                 + (self.chart_frame.winfo_reqheight() - self.canvas.winfo_reqheight())
+                 + self.sbar.winfo_reqheight() + strip)
+        h = self._target_h
+        cb_h = max(48, min(200, int(h * 0.13)))
+        chart_h = max(150, min(420, int(h * 0.28)))
+        rows = max(2, min(14, (h - fixed - cb_h - chart_h) // rowh))
+        self.cb_canvas.configure(height=cb_h)
+        self.canvas.configure(height=chart_h)
+        self.tree.configure(height=rows)
+        self.bt_tree.configure(height=max(3, min(14, rows + 1)))
+        root.update_idletasks()
+        w = max(720, min(root.winfo_reqwidth(), self._sw - 40))
+        hh = max(500, min(root.winfo_reqheight(), self._sh - 40))
+        root.geometry(f"{w}x{hh}")
+        return cb_h, chart_h, rows
+
+    def _wrap_w(self):
+        """提示/说明文字的折行宽度: 可用宽度减去同排按钮区, 保证整行不被裁切。"""
+        return max(320, min(self._target_w - 30, self._sw - 60 - 620))
+
+    def _col_cap(self, n_cols, hard_cap):
+        """列宽上限: 让 n 列的总宽不超过窗口可用宽度, 否则横向滚动。"""
+        avail = max(500, self._target_w - 160)
+        return max(120, min(hard_cap, avail // max(1, n_cols)))
+
+    def _apply_scale(self, event=None):
+        """手动切换界面缩放: 字体、窗口、内部高度、列宽全部重算。"""
+        base = SCALE_PRESETS.get(self.var_scale.get())
+        k = self._auto_k if base is None else max(0.62, min(1.30, base))
+        if abs(k - self.k) < 0.01:
+            return
+        self.k = k
+        self.fs = set_scale(k)
+        _sync_fonts()
+        apply_theme(self.root, k)
+        try:
+            self.root.option_add("*Font", _UI_FONT)
+        except tk.TclError:
+            pass
+        self._target_w = max(720, min(int(1660 * self.sc * k), self._sw - 60))
+        self._target_h = max(520, min(int(1200 * self.sc * k), self._sh - 60))
+        self.root.geometry(f"{self._target_w}x{self._target_h}")
+        self.root.minsize(max(620, int(self._target_w * 0.55)),
+                          max(420, int(self._target_h * 0.55)))
+        self._fit_layout()
+        wrap = self._wrap_w()
+        for lbl in (self.lbl_hint, self.lbl_meta, self.lbl_explain,
+                    self.lbl_batch_hint, self.lbl_bar_hint):
+            lbl.configure(wraplength=wrap)
+        hfont = tkfont.Font(font=FONT_BOLD)
+        self._header_h = int(hfont.metrics("linespace")) + 13
+        self.head_canvas.configure(height=self._header_h)
+        self._autosize_tree(self.bt_tree, tuple(self.bt_tree["columns"]),
+                            cap=self._col_cap(len(self.bt_tree["columns"]), 460))
+        if self.cmp:
+            cols = tuple(self.tree["columns"])
+            self._autosize_tree(self.tree, cols, cap=self._col_cap(len(cols), 520))
+        self._draw_header()
+        self._draw_chart()
+        self.status.configure(text=f"界面缩放 {k:.2f} (字号 {self.fs})")
+
     def _build_compare_tab(self):
         c = self.tab_cmp
-        top = ttk.Frame(c)
+        self.top_frame = top = ttk.Frame(c)
         top.pack(fill="x", padx=4, pady=(4, 2))
         # 按钮先 pack(右侧优先占位), 窗口缩小时提示文字被裁剪, 按钮始终可见
         self.btn_refresh_files = ttk.Button(top, text="刷新", width=6, command=self._refresh_files)
@@ -481,16 +683,41 @@ class BenchGUI:
                    command=self._select_all_files).pack(side="right", padx=(4, 0))
         ttk.Button(top, text="清空", width=6,
                    command=self._clear_file_selection).pack(side="right", padx=(4, 0))
+        self.btn_delete_files = ttk.Button(top, text="删除选中", width=8,
+                                          style="Danger.TButton", state="disabled",
+                                          command=self._delete_selected_files)
+        self.btn_delete_files.pack(side="right", padx=(4, 0))
         ttk.Button(top, text="打开 results 目录", width=13, style="Tool.TButton",
                    command=lambda: os.startfile(RESULTS_DIR) if os.path.isdir(RESULTS_DIR) else None
                    ).pack(side="right")
-        ttk.Label(top, style="Dim.TLabel", text="已保存的结果 (results\\*.json，自动刷新)。勾选要对比的文件；"
-                             "基线用下方下拉框选择，切换基线/指标不影响勾选。双击表格行可看该测试点明细。").pack(side="left", fill="x", expand=True)
+        cb_h, chart_h, tree_rows = self._adaptive_heights()
+        wrap = self._wrap_w()
+        self.lbl_hint = ttk.Label(top, style="Dim.TLabel", wraplength=wrap, justify="left", text="已保存结果 (results\\<模型>\\<名称>.json)。用「模型」筛选，勾选要对比的文件；"
+                  "勾选后可「删除选中」(先备份到 results\\deleted\\)。双击行看明细。")
+        self.lbl_hint.pack(side="left", fill="x", expand=True)
+
+        # 二级筛选: 模型 + 日期(按结果文件的时间)
+        self.filt_frame = filt = ttk.Frame(c)
+        filt.pack(fill="x", padx=4, pady=(2, 0))
+        ttk.Label(filt, text="模型:").pack(side="left")
+        self.var_model = tk.StringVar(value="全部")
+        self.cb_model = ttk.Combobox(filt, textvariable=self.var_model, width=16, state="readonly")
+        self.cb_model.pack(side="left", padx=(4, 10))
+        self.cb_model.bind("<<ComboboxSelected>>",
+                           lambda e: (self._render_file_list(), self._rebuild_compare()))
+        ttk.Label(filt, text="日期:").pack(side="left")
+        self.var_date = tk.StringVar(value="全部日期")
+        self.cb_date = ttk.Combobox(filt, textvariable=self.var_date, width=12, state="readonly")
+        self.cb_date.pack(side="left", padx=(4, 10))
+        self.cb_date.bind("<<ComboboxSelected>>",
+                          lambda e: (self._render_file_list(), self._rebuild_compare()))
+        self.var_count = tk.StringVar(value="")
+        ttk.Label(filt, textvariable=self.var_count, style="Dim.TLabel").pack(side="left")
 
         # 文件勾选区(可滚动): 每个结果一个复选框, 状态存 self.file_vars, 不随焦点/切换丢失
         mid = ttk.Frame(c)
         mid.pack(fill="x", padx=4, pady=2)
-        self.cb_canvas = tk.Canvas(mid, height=130, background=BG_PANEL,
+        self.cb_canvas = tk.Canvas(mid, height=cb_h, background=BG_PANEL,
                                    highlightbackground=BORDER, highlightcolor=ACCENT,
                                    borderwidth=1, relief="flat")
         cbsb = ttk.Scrollbar(mid, orient="vertical", command=self.cb_canvas.yview)
@@ -507,13 +734,25 @@ class BenchGUI:
         self.cb_canvas.bind("<MouseWheel>", _cb_wheel)
         self.cb_frame.bind("<MouseWheel>", _cb_wheel)
         self.file_vars = {}
+        self._all_paths = []
+        self._cb_widgets = {}
+        self._color_of = {}
+        self._full_name = {}
+        self._label_path = {}
+        self._header_h = 30
+        self._tip = None
+        self._tip_key = None
+
+        st = ttk.Style(self.root)
+        for i, col in enumerate(COLORS):
+            st.configure(f"Series{i}.TCheckbutton", foreground=col)
 
         self.var_meta = tk.StringVar(value="（未加载）")
-        lbl_meta = ttk.Label(c, textvariable=self.var_meta, style="PanelDim.TLabel",
-                             wraplength=1080, justify="left")
-        lbl_meta.pack(fill="x", padx=8, pady=(0, 2))
+        self.lbl_meta = ttk.Label(c, textvariable=self.var_meta, style="PanelDim.TLabel",
+                                  wraplength=wrap, justify="left")
+        self.lbl_meta.pack(fill="x", padx=8, pady=(0, 2))
 
-        ctl = ttk.Frame(c)
+        self.ctl_frame = ctl = ttk.Frame(c)
         ctl.pack(fill="x", padx=4, pady=2)
         ttk.Label(ctl, text="基线:").pack(side="left")
         self.var_baseline = tk.StringVar()
@@ -527,7 +766,8 @@ class BenchGUI:
         cbm.pack(side="left", padx=(4, 12))
         cbm.bind("<<ComboboxSelected>>", lambda e: (self._update_explain(), self._rebuild_compare()))
         ttk.Label(ctl, text="行族:").pack(side="left")
-        self.var_family = tk.StringVar(value="全部")
+        # 默认只看 tg 行(生成阶段), 需要 pp/上下文时手动切回「全部」
+        self.var_family = tk.StringVar(value="tg")
         cbf = ttk.Combobox(ctl, textvariable=self.var_family, width=8, state="readonly",
                            values=["全部", "pp", "tg", "ctx_pp", "ctx_tg"])
         cbf.pack(side="left", padx=(4, 12))
@@ -540,29 +780,40 @@ class BenchGUI:
         cbc.bind("<<ComboboxSelected>>", lambda e: self._rebuild_compare())
         ttk.Button(ctl, text="导出对比 CSV…", width=13,
                    command=self._export_csv).pack(side="right")
-        # 同一行右侧空余处: 说明各指标含义与意义(随指标下拉切换实时更新)
+        # 指标含义说明(随指标下拉切换实时更新): 单独一行, 避免被控件挤掉
         self.var_explain = tk.StringVar()
-        self.lbl_explain = ttk.Label(ctl, style="Dim.TLabel", wraplength=460, justify="left",
+        self.lbl_explain = ttk.Label(c, style="Dim.TLabel", wraplength=1080, justify="left",
                                      textvariable=self.var_explain)
-        self.lbl_explain.pack(side="right", padx=(12, 0))
+        self.lbl_explain.pack(fill="x", padx=8, pady=(0, 2))
         self._update_explain()
 
-        # 表格
-        tf = ttk.Frame(c)
+        # 表格: ttk 表头不能按列着色, 所以表头用画布绘制 —— 每个文件列的名字
+        # 用该文件在对比图里的曲线颜色, 与图表/勾选列表一一对应。
+        self.tree_frame = tf = ttk.Frame(c)
         tf.pack(fill="both", expand=False, padx=4, pady=2)
-        self.tree = ttk.Treeview(tf, show="headings", height=10)
+        hfont = tkfont.Font(font=FONT_BOLD)
+        self._header_h = int(hfont.metrics("linespace")) + 13
+        self.head_canvas = tk.Canvas(tf, height=self._header_h, background=BG_HEAD,
+                                     highlightthickness=0, borderwidth=0)
+        self.tree = ttk.Treeview(tf, show="tree", height=tree_rows)
+        self.tree.column("#0", width=0, stretch=False)
         vsb = ttk.Scrollbar(tf, orient="vertical", command=self.tree.yview)
         hsb = ttk.Scrollbar(tf, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         vsb.pack(side="right", fill="y")
         hsb.pack(side="bottom", fill="x")
+        self.head_canvas.pack(side="top", fill="x")
         self.tree.pack(side="left", fill="both", expand=True)
         self.tree.bind("<Double-1>", self._show_row_detail)
+        self.head_canvas.bind("<Motion>", self._header_tooltip)
+        self.head_canvas.bind("<Leave>", lambda e: self._hide_tip())
+        self.tree.bind("<<TreeviewXView>>", lambda e: self._draw_header())
+        self.tree.bind("<Configure>", lambda e: self._draw_header())
 
         # 图
-        cf = ttk.LabelFrame(c, text=" 对比图 ")
+        self.chart_frame = cf = ttk.LabelFrame(c, text=" 对比图 ")
         cf.pack(fill="both", expand=True, padx=4, pady=(2, 6))
-        self.canvas = tk.Canvas(cf, height=340, background=BG_PANEL,
+        self.canvas = tk.Canvas(cf, height=chart_h, background=BG_PANEL,
                                 highlightbackground=BORDER, highlightcolor=ACCENT,
                                 borderwidth=1, relief="flat")
         self.canvas.pack(fill="both", expand=True)
@@ -584,51 +835,283 @@ class BenchGUI:
             self._draw_chart()
 
     def _select_all_files(self):
-        for v in self.file_vars.values():
+        """全选当前模型筛选下的文件。"""
+        for p in self._visible_paths():
+            v = self.file_vars.get(p)
+            if v is None:
+                v = tk.BooleanVar(value=False)
+                self.file_vars[p] = v
             v.set(True)
+        self._update_delete_button()
         self._rebuild_compare()
 
     def _clear_file_selection(self):
         for v in self.file_vars.values():
             v.set(False)
+        self._update_delete_button()
         self._rebuild_compare()
 
-    def _refresh_files(self):
-        try:
-            names = [n for n in os.listdir(RESULTS_DIR) if n.lower().endswith(".json")]
-        except OSError:
-            return
-        paths = sorted((os.path.join(RESULTS_DIR, n) for n in names),
-                       key=os.path.getmtime, reverse=True)
-        prev = self.file_vars          # 保留仍存在的文件的勾选状态
-        for w in self.cb_frame.winfo_children():
-            w.destroy()
-        self.file_vars = {}
+    def _delete_selected_files(self):
+        """删除勾选的结果文件: 先复制到 results\\deleted\\ 备份, 再删除原文件。"""
+        paths = [p for p, v in self.file_vars.items() if v.get() and os.path.isfile(p)]
         if not paths:
-            ttk.Label(self.cb_frame, text="(results\\ 下没有 json 文件)",
-                      style="Dim.TLabel").pack(anchor="w", padx=6, pady=4)
+            messagebox.showinfo("删除", "没有勾选的结果文件。先勾选要删除的文件，再点「删除选中」。")
             return
-        for pth in paths:
-            nm = os.path.basename(pth)
-            v = prev.get(nm) if prev.get(nm) is not None else tk.BooleanVar(value=False)
-            self.file_vars[nm] = v
-            cb = ttk.Checkbutton(self.cb_frame, text=nm, variable=v,
-                                 command=self._rebuild_compare)
-            cb.pack(anchor="w", padx=6, pady=1)
-            cb.bind("<Button-3>", lambda e, n=nm: os.startfile(os.path.join(RESULTS_DIR, n))
-                    if os.path.isfile(os.path.join(RESULTS_DIR, n)) else None)
-        self.cb_canvas.update_idletasks()
+        preview = "\n".join("  " + self._display_name(p) for p in paths[:12])
+        if len(paths) > 12:
+            preview += f"\n  … 等共 {len(paths)} 个文件"
+        if not messagebox.askyesno(
+                "删除结果文件",
+                f"将删除 {len(paths)} 个结果文件:\n{preview}\n\n"
+                "删除前会先复制到 results\\deleted\\ 作为备份(可手动恢复)。\n确认删除？"):
+            return
+        backup_dir = os.path.join(RESULTS_DIR, "deleted")
+        try:
+            os.makedirs(backup_dir, exist_ok=True)
+        except OSError as e:
+            messagebox.showerror("删除", f"无法创建备份目录 results\\deleted\\:\n{e}")
+            return
+        stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        moved, failed = [], []
+        for src in paths:
+            stem, ext = os.path.splitext(os.path.basename(src))
+            dst = unique_result_path(f"{stem}_{stamp}", ext, backup_dir)
+            try:
+                shutil.copy2(src, dst)
+                os.remove(src)
+                moved.append(self._file_label(src))
+            except OSError as e:
+                failed.append(f"{self._file_label(src)}: {e}")
+        self._refresh_files()
+        self._rebuild_compare()
+        if failed:
+            messagebox.showerror("删除", "部分文件删除失败:\n" + "\n".join(failed))
+        else:
+            messagebox.showinfo("删除", f"已删除 {len(moved)} 个文件。\n备份在 results\\deleted\\")
 
-    def _selected_paths(self):
+    def _hide_tip(self):
+        if self._tip is not None:
+            try:
+                self._tip.destroy()
+            except Exception:
+                pass
+            self._tip = None
+            self._tip_key = None
+
+    def _header_tooltip(self, event):
+        """鼠标移到表头(测试点那一行)时, 弹出该列对应的完整文件名。"""
+        if not self.cmp:
+            self._hide_tip()
+            return
+        if event.y > self._header_h + 2:
+            self._hide_tip()
+            return
+        cols = list(self.tree["columns"])
+        widths = [self.tree.column(c, "width") for c in cols]
+        total = sum(widths)
+        if total <= 0:
+            return
+        try:
+            first, _ = self.tree.xview()
+        except Exception:
+            first = 0.0
+        x = event.x - 1 + first * total
+        idx = None
+        acc = 0
+        for i, w in enumerate(widths):
+            if x < acc + w:
+                idx = i
+                break
+            acc += w
+        if idx is None or idx == 0:
+            self._hide_tip()
+            return
+        j = (idx - 1) // 2
+        if j >= len(self.cmp["labels"]):
+            self._hide_tip()
+            return
+        lab = self.cmp["labels"][j]
+        pth = self._label_path.get(lab)
+        full = self._full_name.get(lab, lab)
+        if pth:
+            full += "  ·  " + self._file_date(pth)
+        if self._tip is not None and self._tip_key == full:
+            return
+        self._hide_tip()
+        w = tk.Toplevel(self.root)
+        w.tk.call("wm", "override", w, 1)
+        w.configure(bg=BG_HEAD)
+        tk.Label(w, text=full, bg=BG_HEAD, fg=FG, font=_UI_FONT, padx=8, pady=4,
+                 wraplength=max(300, self._target_w - 120), justify="left").pack()
+        w.update_idletasks()
+        px = self.head_canvas.winfo_rootx() + event.x - w.winfo_width() // 2
+        py = self.head_canvas.winfo_rooty() + self._header_h + 6
+        px = max(0, min(px, self.root.winfo_rootx() + self.root.winfo_width() - w.winfo_width()))
+        w.geometry(f"+{px}+{py}")
+        self._tip = w
+        self._tip_key = full
+
+    def _draw_header(self):
+        """重绘画布表头: 文件列名字用该系列在图表里的颜色。"""
+        cv = self.head_canvas
+        cv.delete("all")
+        tree = self.tree
+        tw = tree.winfo_width()
+        if tw < 20:
+            return
+        cols = list(tree["columns"])
+        widths = [tree.column(c, "width") for c in cols]
+        total = sum(widths)
+        if total <= 0:
+            return
+        try:
+            first, _ = tree.xview()
+        except Exception:
+            first = 0.0
+        x = 1 - first * total
+        cy = self._header_h / 2.0
+        for i, col in enumerate(cols):
+            w = widths[i]
+            cx = x + w / 2.0
+            if cx + 6 < 0 or cx - 6 > tw:      # 列完全滚出可视区, 不画
+                x += w
+                continue
+            text = tree.heading(col, "text")
+            if i == 0:
+                color = FG_DIM
+            elif i % 2 == 1:
+                color = COLORS[((i - 1) // 2) % len(COLORS)]
+            else:
+                color = FG_DIM
+            cv.create_text(cx, cy, text=text, fill=color, font=FONT_BOLD)
+            x += w
+
+    def _apply_series_colors(self):
+        """勾选列表里的文件名颜色 = 图表里该文件曲线的颜色。"""
+        for pth, cb in self._cb_widgets.items():
+            i = self._color_of.get(pth)
+            cb.configure(style="TCheckbutton" if i is None else f"Series{i % len(COLORS)}.TCheckbutton")
+
+    def _model_of(self, pth):
+        """文件所属模型(子目录名); 根目录文件归为「(根目录)」。"""
+        parts = os.path.relpath(pth, RESULTS_DIR).split(os.sep)
+        return parts[0] if len(parts) > 1 else "(根目录)"
+
+    def _display_name(self, pth):
+        """勾选列表里的显示名: 始终带模型，便于辨认。"""
+        parts = os.path.relpath(pth, RESULTS_DIR).split(os.sep)
+        stem = os.path.splitext(os.path.basename(pth))[0]
+        return f"{parts[0]} / {stem}" if len(parts) > 1 else stem
+
+    def _file_label(self, pth):
+        """显示/列名: 同名文件跨模型时加「模型 / 」前缀，否则只用名称。"""
+        lab = getattr(self, "_labels", {}).get(pth)
+        if lab:
+            return lab
+        stem = os.path.splitext(os.path.basename(pth))[0]
+        parts = os.path.relpath(pth, RESULTS_DIR).split(os.sep)
+        return f"{parts[0]} / {stem}" if len(parts) > 1 else stem
+
+    def _compute_labels(self, paths):
+        from collections import Counter
+        stems = Counter(os.path.splitext(os.path.basename(p))[0] for p in paths)
+        self._labels = {}
+        for p in paths:
+            stem = os.path.splitext(os.path.basename(p))[0]
+            parts = os.path.relpath(p, RESULTS_DIR).split(os.sep)
+            self._labels[p] = f"{parts[0]} / {stem}" if len(parts) > 1 and stems[stem] > 1 else stem
+
+    def _file_date(self, pth):
+        """结果文件的日期(取 JSON 里的 timestamp, 取不到则用文件修改时间)。"""
+        d = getattr(self, "_dates", {}).get(pth)
+        if d:
+            return d
+        try:
+            with open(pth, "r", encoding="utf-8") as f:
+                head = f.read(400)
+            m = re.search(r'"timestamp"\s*:\s*"(\d{4}-\d{2}-\d{2})', head)
+            d = m.group(1) if m else ""
+        except OSError:
+            d = ""
+        if not d:
+            d = _dt.datetime.fromtimestamp(os.path.getmtime(pth)).strftime("%Y-%m-%d")
+        self._dates[pth] = d
+        return d
+
+    def _refresh_files(self):
+        self._all_paths = sorted(iter_result_files(), key=os.path.getmtime, reverse=True)
+        self._compute_labels(self._all_paths)
+        self._dates = {}
+        models = sorted({self._model_of(p) for p in self._all_paths})
+        dates = sorted({self._file_date(p) for p in self._all_paths}, reverse=True)
+        self.cb_model["values"] = ["全部"] + models
+        # 下拉框宽度按最长模型名实测, 避免长模型名在框内被截断显示
+        self.cb_model["width"] = min(24, max(12, max((len(m) for m in models), default=4) + 2))
+        self.cb_date["values"] = ["全部日期"] + dates
+        if self.var_model.get() not in self.cb_model["values"]:
+            self.var_model.set("全部")
+        if self.var_date.get() not in self.cb_date["values"]:
+            self.var_date.set("全部日期")
+        self._render_file_list()
+
+    def _visible_paths(self):
+        m, d = self.var_model.get(), self.var_date.get()
         out = []
-        for nm, v in self.file_vars.items():
-            if v.get():
-                pth = os.path.join(RESULTS_DIR, nm)
-                if os.path.isfile(pth):
-                    out.append(pth)
+        for p in self._all_paths:
+            if m != "全部" and self._model_of(p) != m:
+                continue
+            if d != "全部日期" and self._file_date(p) != d:
+                continue
+            out.append(p)
         return out
 
+    def _render_file_list(self):
+        paths = self._visible_paths()
+        self._cb_widgets = {}
+        for w in self.cb_frame.winfo_children():
+            w.destroy()
+        n_all = len(self._all_paths)
+        self.var_count.set(f"共 {n_all} 个结果, 当前筛选 {len(paths)} 个")
+        if not paths:
+            msg = "(results\\ 下没有 json 文件)" if not self._all_paths \
+                else f"(模型「{self.var_model.get()}」/ 日期「{self.var_date.get()}」下没有结果文件)"
+            ttk.Label(self.cb_frame, text=msg, style="Dim.TLabel").pack(anchor="w", padx=6, pady=4)
+            self._update_delete_button()
+            return
+        for pth in paths:
+            v = self.file_vars.get(pth)
+            if v is None:
+                v = tk.BooleanVar(value=False)
+                self.file_vars[pth] = v
+            cb = ttk.Checkbutton(self.cb_frame, text=self._display_name(pth), variable=v,
+                                 command=self._on_check_change)
+            cb.pack(anchor="w", padx=6, pady=1)
+            cb.bind("<Button-3>", lambda e, p=pth: os.startfile(p) if os.path.isfile(p) else None)
+            self._cb_widgets[pth] = cb
+        self._apply_series_colors()
+        self.cb_canvas.update_idletasks()
+        self._update_delete_button()
+
+    def _on_check_change(self):
+        self._update_delete_button()
+        self._rebuild_compare()
+
+    def _update_delete_button(self):
+        """没有勾选任何(当前筛选下)文件时禁用「删除选中」，避免误点。"""
+        n = sum(1 for p in self._visible_paths()
+                if self.file_vars.get(p) and self.file_vars[p].get())
+        try:
+            self.btn_delete_files.configure(state="normal" if n else "disabled")
+        except tk.TclError:
+            pass
+
+    def _selected_paths(self):
+        """当前模型筛选下、且被勾选的文件。"""
+        return [p for p in self._visible_paths()
+                if self.file_vars.get(p) and self.file_vars[p].get() and os.path.isfile(p)]
+
     def _rebuild_compare(self, event=None):
+        self._hide_tip()
         paths = self._selected_paths()
         if not paths:
             self.cmp = None
@@ -640,12 +1123,13 @@ class BenchGUI:
             self.tree.configure(columns=("test",))
             self.tree.heading("test", text="测试点")
             self.tree.column("test", width=240, anchor="w")
+            self._draw_header()
             self._draw_chart()
             return
         reports = []
         for pth in paths:
             try:
-                reports.append(load_report(pth))
+                reports.append(load_report(pth, self._file_label(pth)))
             except (OSError, ValueError) as e:
                 messagebox.showerror("对比", f"解析失败 {os.path.basename(pth)}:\n{e}")
                 return
@@ -656,6 +1140,13 @@ class BenchGUI:
             self.var_baseline.set(base_name)
         self.cb_baseline["values"] = labels
         labels = [base_name] + [l for l in labels if l != base_name]   # 基线排第一列
+        label_of = {}
+        for r, p in zip(reports, paths):
+            label_of[r[0]] = p
+        self._full_name = {lab: self._display_name(label_of[lab]) for lab in labels}
+        self._label_path = label_of
+        self._color_of = {label_of[lab]: i for i, lab in enumerate(labels)}
+        self._apply_series_colors()
         field = dict(METRIC_FIELDS)[self.var_metric.get()]
         family = self.var_family.get()
         # 合并: 行按首次出现顺序
@@ -723,18 +1214,14 @@ class BenchGUI:
         # 列宽全部由字体实测决定(见 _autosize_tree), 不再估算固定值
         # 列多时放宽上限: 宁可宽不可窄, 保证长表头(含 descender)不被裁切
         self._autosize_tree(self.tree, tuple(cols),
-                            cap=max(520, 200 + len(cols) * 15))
-        # 表头行按表头字体实测加高: 列宽足够但行高不够时, 表头字符下半部仍会被裁切
+                            cap=self._col_cap(len(cols), 520))
+        # 表头已用画布绘制, 这里只需保证数据行高足够(中文 descender 不被裁切)
         hstyle = ttk.Style(self.tree)
-        hfont = tkfont.Font(font=hstyle.lookup("Treeview.Heading", "font") or FONT_BOLD)
-        try:
-            top, bot = [int(x) for x in str(hstyle.lookup("Treeview.Heading", "padding")).split()]
-        except ValueError:
-            top = bot = 10
-        hrow = int(hfont.metrics("linespace")) + top + bot
+        dfont = tkfont.Font(font=_UI_FONT)
         hstyle.configure("ClipFix.Treeview",
-                         rowheight=max(hrow, int(hstyle.lookup("Treeview", "rowheight") or 28)))
+                         rowheight=max(28, int(dfont.metrics("linespace")) + 10))
         self.tree.style = "ClipFix.Treeview"
+        self._draw_header()
         self._draw_chart()
 
     def _show_row_detail(self, event=None):
@@ -815,7 +1302,18 @@ class BenchGUI:
         field = self.cmp["field"]
         W = max(cv.winfo_width(), 400)
         H = max(cv.winfo_height(), 240)
-        L, R, T, B = 64, 18, 34, 62      # 下边距加大: 底部留出图例行, 与 X 轴标签分开
+        af = tkfont.Font(font=FONT_MONO)
+        ls = af.metrics("linespace")
+        L = max(40, af.measure("00.00") + 14)     # Y 轴标签实测宽度 + 呼吸空间
+        R, T = 18, max(26, ls + 12)
+        # 图例先按实际像素宽度布局, 再据此决定下边距 —— 右下角的文件名不再被裁切
+        if mode == "line":
+            legend_items = [(lab, color) for lab, color, _pts in series]
+        else:
+            legend_items = [(l, COLORS[i % len(COLORS)]) for i, l in enumerate(self.cmp["labels"])]
+        legend_rows = self._legend_layout(legend_items, W)
+        legend_h = sum(max(r[3] for r in row) + 6 for row in legend_rows) - 6
+        B = max(62, legend_h + 16)       # 下边距: X 轴标签 + 图例行
         pw, ph = W - L - R, H - T - B
         grid_color, axis_fill = "#3c3c55", FG_DIM
 
@@ -855,7 +1353,8 @@ class BenchGUI:
                 coords = []
                 for x, y in pts:
                     coords += [X(x), Y(y)]
-                cv.create_line(*coords, fill=color, width=CHART_LINE_WIDTH)
+                if len(pts) > 1:                    # 单点系列没有线段可画
+                    cv.create_line(*coords, fill=color, width=CHART_LINE_WIDTH)
                 show_vals = len(pts) <= 24
                 for x, y in pts:
                     cx, cy = X(x), Y(y)
@@ -875,7 +1374,7 @@ class BenchGUI:
             # 指标名放到 Y 轴顶部(与轴标签错开), 底部留给图例
             cv.create_text(L, T - 12, text=self.cmp["metric_label"], anchor="w",
                            fill=axis_fill, font=(FONT[0], 10), tags="legend")
-            self._legend(series, W, H)
+            self._legend_draw(legend_rows, W, H)
             cv.tag_raise("legend")
 
         else:
@@ -889,8 +1388,9 @@ class BenchGUI:
             # X 轴名称自适应: 组够宽 → 横排长名(占满组宽); 窄 → 35° 斜排并加大下边距。
             # 不再跳号、不再固定截断 12 字符, 尽量多显示真实名称
             rotate = slot < 90
-            B = 62 if not rotate else 104
-            ph = H - T - B
+            if rotate:
+                B = max(B, 104)
+                ph = H - T - B
 
             def Y(y):
                 return T + (1 - y / ymax) * ph
@@ -902,6 +1402,7 @@ class BenchGUI:
                 cv.create_line(L, Y(yv), W - R, Y(yv), fill=grid_color)
                 cv.create_text(L - 6, Y(yv), text=fmt_val(field, yv), anchor="e", fill=axis_fill, font=FONT_MONO)
             bw = max(2.0, slot * 0.45 / n_lab)      # 窄柱: 组内只占 45%, 留白更宽
+            xf = tkfont.Font(font=FONT_MONO)        # X 轴名称宽度实测
             for gi, (name, vals) in enumerate(groups):
                 x0 = L + slot * gi + slot * 0.275    # 柱区居中(45% 宽)
                 for li, v in enumerate(vals):
@@ -920,16 +1421,22 @@ class BenchGUI:
                         cv.create_text(bx, Y(v) - 14, text=t, fill=FG, font=FONT_MONO, tags="vallabel")
                 cx = L + slot * gi + slot * 0.5
                 if rotate:
-                    maxc = 22                        # 斜排可容纳更多字符(下边距已加大)
-                    short = name if len(name) <= maxc else name[:maxc - 1] + "…"
+                    maxw = max(24, slot + 10)        # 斜排: 水平投影 = 宽度 * cos35°
+                    s = name
+                    while len(s) > 2 and xf.measure(s) * 0.82 > maxw:
+                        s = s[:-1]
+                    short = s if s == name else s + "…"
                     cv.create_text(cx, H - B + 6, text=short, anchor="e", angle=-35,
                                    fill=axis_fill, font=FONT_MONO, tags="legend")
                 else:
-                    maxc = max(6, int(slot / 5.8))   # Consolas 8 ≈ 5.8px/字符, 横排占满组宽不重叠
-                    short = name if len(name) <= maxc else name[:maxc - 1] + "…"
+                    maxw = max(24, slot - 6)         # 横排: 实测宽度, 不重叠也不裁切
+                    s = name
+                    while len(s) > 2 and xf.measure(s) > maxw:
+                        s = s[:-1]
+                    short = s if s == name else s + "…"
                     cv.create_text(cx, H - B + 12, text=short, anchor="c", fill=axis_fill,
                                    font=FONT_MONO, tags="legend")
-            self._legend([(l, COLORS[i % len(COLORS)], []) for i, l in enumerate(self.cmp["labels"])], W, H)
+            self._legend_draw(legend_rows, W, H)
             cv.create_text(L, T - 12, text=self.cmp["metric_label"], anchor="w",
                            fill=axis_fill, font=(FONT[0], 10), tags="legend")
             cv.tag_raise("vallabel")
@@ -941,40 +1448,63 @@ class BenchGUI:
             return f"{v // 1024}K"
         return f"{v:,.0f}"
 
-    def _legend(self, series, W, H):
-        # 图例移到图表最底部一行(在 X 轴标签下方), 不与数据或轴标签重叠
-        cv = self.canvas
-        items = [(lab, color) for lab, color, _pts in series]
-        # 按可容纳宽度分行(每行从右向左排, 放不下则换行)
-        rows = [[]]
+    def _legend_layout(self, items, W):
+        """图例布局: 用字体实测像素宽度折行/分行, 返回 rows=[[(text,color,width,height),...],...]"""
+        lf = (_UI_FONT[0], max(7, self.fs - 3))
+        f = tkfont.Font(font=lf)
+        ls = f.metrics("linespace")
+        avail = max(140, W - 24)
+        maxw = avail - 34                      # 减去色线(16)与间距(18)
+        rows, row, used = [], [], 0
         for lab, color in items:
-            txt = self._legend_text(lab)
-            wlen = max(len(p) for p in txt.split("\n")) * 7 + 34
-            if rows[-1] and sum(r[2] for r in rows[-1]) + wlen > W - 24:
-                rows.append([])
-            rows[-1].append((txt, color, wlen))
-        y = H - 10
-        for row in reversed(rows):
-            x = W - 18
-            for txt, color, wlen in reversed(row):
-                x -= wlen
-                cv.create_line(x, y, x + 16, y, fill=color, width=3, tags="legend")
-                cv.create_text(x + 20, y, text=txt, anchor="w", fill=FG, font=(_UI_FONT[0], 8), tags="legend")
-                x -= 14
-            y -= 16
+            lines, cur = [], ""
+            for wd in lab.split(" "):
+                if not wd:
+                    continue
+                trial = cur + " " + wd if cur else wd
+                if f.measure(trial) <= maxw:
+                    cur = trial
+                else:
+                    if cur:
+                        lines.append(cur)
+                    cur = wd
+            if cur:
+                lines.append(cur)
+            fixed = []
+            for ln in lines:
+                if f.measure(ln) > maxw:       # 单个词也超宽: 硬折并加省略号
+                    s = ln
+                    while s and f.measure(s + "…") > maxw:
+                        s = s[:-1]
+                    ln = (s + "…") if s else ln[:1] + "…"
+                fixed.append(ln)
+            wlen = max([f.measure(l) for l in fixed] + [0]) + 34
+            hgt = len(fixed) * ls
+            if row and used + wlen > avail:
+                rows.append(row)
+                row, used = [], 0
+            row.append(("\n".join(fixed), color, wlen, hgt))
+            used += wlen
+        if row:
+            rows.append(row)
+        return rows
 
-    @staticmethod
-    def _legend_text(lab):
-        if len(lab) <= 26:
-            return lab
-        mid = len(lab) // 2
-        i = lab.rfind(" ", 0, mid + 8)         # 中间附近的空格处换行
-        j = lab.find(" ", mid - 8)
-        if i >= 0 and (j < 0 or abs(i - mid) <= abs(j - mid)):
-            return f"{lab[:i].rstrip()}\n{lab[i + 1:]}"
-        if j >= 0:
-            return f"{lab[:j].rstrip()}\n{lab[j + 1:]}"
-        return f"{lab[:mid]}…\n{lab[mid:]}"    # 无空格则硬折
+    def _legend_draw(self, rows, W, H):
+        """图例在图表最底部, 从右向左排, 每行高度实测, 不会超出画布。"""
+        cv = self.canvas
+        lf = (_UI_FONT[0], max(7, self.fs - 3))
+        y = H - 8
+        for row in reversed(rows):
+            rh = max(r[3] for r in row)
+            x = W - 18
+            for txt, color, wlen, _h in reversed(row):
+                x -= wlen
+                cy = y - rh / 2.0
+                cv.create_line(x, cy, x + 16, cy, fill=color, width=3, tags="legend")
+                cv.create_text(x + 20, cy, text=txt, anchor="w", fill=FG,
+                               font=lf, tags="legend")
+                x -= 14
+            y -= rh + 6
 
     # ---------------------------------------------------------- 预设页 ----
 
@@ -992,25 +1522,33 @@ class BenchGUI:
         self.btn_batch_stop = ttk.Button(top, text="■ 停止", width=8,
                                          style="Danger.TButton", command=self.on_stop, state="disabled")
         self.btn_batch_stop.pack(side="right")
-        ttk.Label(top, style="Dim.TLabel", text="单个: 选中预设 → 「▶ 运行该预设」；批量: 选中 1..N 行(Ctrl 多选) → 「▶▶ 批量运行选中」，"
+        wrap = self._wrap_w()
+        self.lbl_batch_hint = ttk.Label(top, style="Dim.TLabel", wraplength=wrap, justify="left",
+                                        text="单个: 选中预设 → 「▶ 运行该预设」；批量: 选中 1..N 行(Ctrl 多选) → 「▶▶ 批量运行选中」，"
                            "逐个顺序执行，自动存 results\\<名称>.json；需换服务器配置时先重启服务器再点运行(自动等端口)，"
-                           "或在编辑里填前置命令自动执行。跑完去「对比」页勾选合并。").pack(side="left", fill="x", expand=True)
+                           "或在编辑里填前置命令自动执行。跑完去「对比」页勾选合并。")
+        self.lbl_batch_hint.pack(side="left", fill="x", expand=True)
 
         mid = ttk.Frame(b)
         mid.pack(fill="both", expand=True, padx=4, pady=2)
-        cols = ("name", "base_url", "model", "pp", "tg", "depth", "conc", "runs", "mode")
-        self.bt_tree = ttk.Treeview(mid, columns=cols, show="headings", height=9, selectmode="extended")
+        cols = ("name", "base_url", "model", "pp", "tg", "depth", "conc", "runs", "mode", "on")
+        _cb_h, _chart_h, tree_rows = self._adaptive_heights()
+        self.bt_tree = ttk.Treeview(mid, columns=cols, show="headings",
+                                    height=max(4, min(12, tree_rows + 1)),
+                                    selectmode="extended")
         for c, anc in (("name", "w"), ("base_url", "w"), ("model", "w"),
                        ("pp", "center"), ("tg", "center"), ("depth", "w"),
-                       ("conc", "center"), ("runs", "center"), ("mode", "center")):
+                       ("conc", "center"), ("runs", "center"), ("mode", "center"),
+                       ("on", "center")):
             # 列宽全部由字体实测决定(见 _autosize_tree), 不再估算固定值
             self.bt_tree.column(c, anchor=anc, stretch=False)
         for c, h in (("name", "名称(结果文件名)"), ("base_url", "base-url"),
                      ("model", "模型"), ("pp", "pp"), ("tg", "tg"), ("depth", "depth"),
-                     ("conc", "并发"), ("runs", "runs"), ("mode", "latency")):
+                     ("conc", "并发"), ("runs", "runs"), ("mode", "延迟"),
+                     ("on", "启用")):
             self.bt_tree.heading(c, text=h)
         # 列宽全部由字体实测决定(见 _autosize_tree), 不再估算固定值
-        self._autosize_tree(self.bt_tree, cols, cap=460)
+        self._autosize_tree(self.bt_tree, cols, cap=self._col_cap(len(cols), 460))
         # 表头行按表头字体实测加高: 列宽足够但行高不够时, 表头字符下半部仍会被裁切
         hstyle = ttk.Style(self.bt_tree)
         hfont = tkfont.Font(font=hstyle.lookup("Treeview.Heading", "font") or FONT_BOLD)
@@ -1029,18 +1567,21 @@ class BenchGUI:
         hsb.pack(side="bottom", fill="x")
         self.bt_tree.pack(side="left", fill="both", expand=True)
         self.bt_tree.tag_configure("alt", background="#2b2b3d")
+        self.bt_tree.tag_configure("off", foreground="#6a6a82")
         self.bt_tree.bind("<Double-1>", lambda e: self._batch_edit_sel())
         self.bt_tree.bind("<Delete>", lambda e: self._batch_delete())
 
-        bar = ttk.Frame(b)
+        self.bar_frame = bar = ttk.Frame(b)
         bar.pack(fill="x", padx=4, pady=(2, 6))
         for txt, cmd in (("添加预设…", lambda: self._batch_edit(None)),
                          ("编辑选中…", self._batch_edit_sel),
                          ("复制选中…", self._batch_copy_sel),
                          ("删除选中", self._batch_delete)):
             ttk.Button(bar, text=txt, width=11, style="Tool.TButton", command=cmd).pack(side="left", padx=(0, 6))
-        ttk.Label(bar, style="Dim.TLabel", text="提示: 每个预设 = 一种服务器配置(如 MTP N)。运行前如需换配置，"
-                            "先重启服务器再点运行；也可在编辑里填前置命令自动执行。双击行=编辑，Delete=删除。").pack(side="left", padx=8)
+        self.lbl_bar_hint = ttk.Label(bar, style="Dim.TLabel", wraplength=wrap, justify="left",
+                                      text="提示: 每个预设 = 一种服务器配置(如 MTP N)。运行前如需换配置，"
+                            "先重启服务器再点运行；也可在编辑里填前置命令自动执行。双击行=编辑，Delete=删除。")
+        self.lbl_bar_hint.pack(side="left", padx=8)
 
     def _load_batch(self):
         try:
@@ -1061,15 +1602,21 @@ class BenchGUI:
         for cid in self.bt_tree.get_children():
             self.bt_tree.delete(cid)
         for n, c in enumerate(self.batch):
+            on = c.get("enabled", True)
+            mode = {"generation": "gen", "api": "api", "none": "none"}.get(
+                c.get("latency_mode", "generation"), "gen")
             vals = (c.get("name", ""), c.get("base_url", ""), c.get("model", ""),
                     c.get("pp", "") or "—", c.get("tg", "") or "—", c.get("depth", "") or "—",
                     c.get("concurrency", "") or "—", c.get("runs", "") or "—",
-                    c.get("latency_mode", "generation"))
-            self.bt_tree.insert("", "end", values=vals,
-                                tags=("alt",) if n % 2 else ())
+                    mode, "✓" if on else "—")
+            tags = () if on else ("off",)
+            if n % 2:
+                tags = tags + ("alt",)
+            self.bt_tree.insert("", "end", values=vals, tags=tags)
         # 列宽全部由字体实测决定(见 _autosize_tree), 不再估算固定值
         self._autosize_tree(self.bt_tree, ("name", "base_url", "model", "pp", "tg",
-                                           "depth", "conc", "runs", "mode"), cap=460)
+                                           "depth", "conc", "runs", "mode", "on"),
+                            cap=self._col_cap(len(self.bt_tree["columns"]), 460))
 
     def _autosize_tree(self, tree, cols, cap=520):
         """按字体实测每列内容像素宽, 列宽取 max(表头宽, 最宽内容宽)+padding。
@@ -1079,22 +1626,21 @@ class BenchGUI:
         font = style.lookup("Treeview", "font") or FONT
         pad = 12
         f = tkfont.Font(font=font)
-        # DPI 修正: Tk 的 measure() 按逻辑字体(96dpi)返回像素宽, 而屏幕按系统
-        # 显示缩放(125%/150%)渲染, 实际字形更宽 —— 不修正就会"20字符只显示15个"。
-        # Tk 的 font actual 没有 dpi, 用 tk scaling(每英寸点数)取实际渲染密度。
+        # DPI 修正: f.measure() 已经按当前 tk scaling 返回物理像素, 所以实测宽度
+        # 直接用; 只有 cap(设计基准, 按 100% 缩放定义)需要按 scaling 放大。
         try:
-            dpi = float(self.root.tk.call('tk', 'scaling'))
+            scaling = float(self.root.tk.call('tk', 'scaling'))
         except Exception:
-            dpi = 96.0
-        scale = max(1.0, dpi / 96.0)
+            scaling = 1.0
+        scale = max(1.0, scaling)
         for c in cols:
             w = 0
             for cid in tree.get_children():
                 w = max(w, f.measure(str(tree.set(cid, c))))
             w = max(w, f.measure(str(tree.heading(c, "text"))))
-            # 列宽必须"够宽"才不会被裁切; pad 给字形左右留呼吸空间
-            # cap 只限"内容宽"部分, 上限本身也按 DPI 放大, 否则 cap 会反过来制造裁切
-            tree.column(c, width=int(min(cap, int(w * scale)) * scale) + pad)
+            # f.measure() 已经按当前 tk scaling 返回物理像素, 不能再二次放大
+            # (旧代码 *scale 两次, 高 DPI 下列宽被撑到 1.5 倍, 窗口自然装不下)
+            tree.column(c, width=min(int(cap * scale), w) + pad)
 
     def _batch_edit_sel(self):
         sel = self.bt_tree.selection()
@@ -1140,74 +1686,182 @@ class BenchGUI:
     def _batch_edit(self, idx):
         new = idx is None
         cfg = dict(self.batch[idx]) if not new else dict(
-            DEFAULT_PRESETS["单流速度"], pre_cmd="", enabled=True)
+            DEFAULT_PRESETS["单流速度"], name="新预设", pre_cmd="", post_cmd="", enabled=True)
+        k = getattr(self, "k", 1.0)
+        EW = max(24, int(40 * k))          # 通用输入框宽度(字符数, 随界面缩放)
         w = tk.Toplevel(self.root)
         w.title("新增预设" if new else f"编辑预设 - {cfg.get('name', '')}")
         w.transient(self.root)
         frm = ttk.Frame(w)
-        frm.pack(fill="both", expand=True, padx=10, pady=10)
+        frm.pack(fill="both", expand=True, padx=10, pady=8)
         strs, bools = {}, {}
+        R = [0]
 
-        def add_row(r, label, key, width=42):
-            ttk.Label(frm, text=label).grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        def sec(title):
+            ttk.Label(frm, text=title, style="Section.TLabel").grid(
+                row=R[0], column=0, columnspan=4, sticky="w", pady=(10, 2))
+            R[0] += 1
+
+        def add_row(label, key, width=None, aux=None):
+            r = R[0]
+            ttk.Label(frm, text=label).grid(row=r, column=0, sticky="w", padx=(0, 8), pady=2)
             v = tk.StringVar(value=str(cfg.get(key, "") or ""))
             strs[key] = v
-            e = ttk.Entry(frm, textvariable=v, width=width)
-            e.grid(row=r, column=1, sticky="ew", pady=3)
+            e = ttk.Entry(frm, textvariable=v, width=width or EW)
+            e.grid(row=r, column=1, sticky="ew", pady=2)
             e.bind("<FocusIn>", lambda ev, ent=e: ent.selection_range(0, len(ent.get())))
+            if aux:
+                aux(r)
+            R[0] += 1
 
-        def add_chk(r, col, label, key):
-            v = tk.BooleanVar(value=bool(cfg.get(key, False)))
+        def add_chk(r, col, label, key, default=False):
+            v = tk.BooleanVar(value=bool(cfg.get(key, default)))
             bools[key] = v
-            ttk.Checkbutton(frm, text=label, variable=v).grid(row=r, column=col * 2, sticky="w", padx=6, pady=3)
+            ttk.Checkbutton(frm, text=label, variable=v).grid(
+                row=r, column=col * 2, sticky="w", padx=6, pady=2)
 
-        add_row(0, "名称(结果文件名):", "name", 30)
-        add_row(1, "前置命令(可选, 运行该预设前执行):", "pre_cmd", 54)
-        add_row(2, "base-url:", "base_url")
-        # 模型行: 输入框 + 「查询模型」按钮(在线获取服务端真实模型名, 避免手填错名)
-        ttk.Label(frm, text="模型 --model:").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=3)
-        v = tk.StringVar(value=str(cfg.get("model", "") or ""))
-        strs["model"] = v
-        ent_model = ttk.Entry(frm, textvariable=v, width=30)
-        ent_model.grid(row=3, column=1, sticky="ew", pady=3)
-        ent_model.bind("<FocusIn>", lambda ev, e=ent_model: e.selection_range(0, len(e.get())))
-        btn_q = ttk.Button(frm, text="查询模型", width=8,
-                           command=lambda: self._query_models(strs["base_url"].get(), strs["model"], btn_q))
-        btn_q.grid(row=3, column=2, padx=(6, 0), pady=3)
-        add_row(4, "pp (多值空格分隔):", "pp", 18)
-        add_row(5, "tg:", "tg", 18)
-        add_row(6, "depth:", "depth", 24)
-        add_row(7, "concurrency:", "concurrency", 10)
-        add_row(8, "runs:", "runs", 8)
-        ttk.Label(frm, text="latency-mode:").grid(row=9, column=0, sticky="w", padx=(0, 8))
+        # ------------------------------------------------ 连接与模型 ----
+        sec("连接与模型")
+        add_row("名称(结果文件名):", "name", 26)
+        add_row("base-url:", "base_url")
+        add_row("api-key(本地服务留空):", "api_key", 24)
+
+        def _model_aux(r):
+            btn_q = ttk.Button(frm, text="查询模型", width=8,
+                               command=lambda: self._query_models(
+                                   strs["base_url"].get(), strs["model"], btn_q))
+            btn_q.grid(row=r, column=2, padx=(6, 0), pady=2)
+
+        add_row("模型 --model:", "model", 24, aux=_model_aux)
+        add_row("served-model-name(留空=同 model):", "served_model_name", 24)
+
+        def _tok_aux(r):
+            ttk.Button(frm, text="浏览…", width=7,
+                       command=lambda: self._pick_tokenizer(strs["tokenizer"])).grid(
+                row=r, column=2, padx=(6, 0), pady=2)
+
+        add_row("tokenizer(本地路径或 HF 名):", "tokenizer", 24, aux=_tok_aux)
+
+        # ------------------------------------------------ 测试矩阵 ----
+        sec("测试矩阵 (depth × pp × tg × concurrency 全组合)")
+        for label, key, width in (("pp (多值空格分隔):", "pp", 18),
+                                  ("tg:", "tg", 18),
+                                  ("depth:", "depth", 26),
+                                  ("concurrency:", "concurrency", 12),
+                                  ("runs (每点重复轮数):", "runs", 8),
+                                  ("warmup-runs (每形状预热):", "warmup_runs", 8)):
+            add_row(label, key, width)
+        ttk.Label(frm, text="latency-mode:").grid(row=R[0], column=0, sticky="w", padx=(0, 8))
         v = tk.StringVar(value=str(cfg.get("latency_mode", "generation")))
         strs["latency_mode"] = v
         ttk.Combobox(frm, textvariable=v, width=12, state="readonly",
-                     values=["api", "generation", "none"]).grid(row=9, column=1, sticky="w")
-        add_chk(10, 0, "--enable-prefix-caching (两阶段)", "prefix_caching")
-        add_chk(10, 1, "--no-cache", "no_cache")
-        add_chk(11, 0, "--exact-tg (vLLM)", "exact_tg")
-        add_chk(11, 1, "--skip-coherence", "skip_coherence")
-        add_chk(12, 0, "--no-warmup", "no_warmup")
-        add_chk(12, 1, "运行前等待服务端口(最多约2分钟)", "wait_port")
+                     values=["api", "generation", "none"]).grid(row=R[0], column=1, sticky="w")
+        R[0] += 1
+        est = ttk.Label(frm, text="", style="Dim.TLabel")
+        est.grid(row=R[0], column=0, columnspan=4, sticky="w", pady=(2, 0))
+        R[0] += 1
+
+        def update_est(*_):
+            try:
+                runs = int(strs["runs"].get() or 3)
+                wu = int(strs["warmup_runs"].get() or 0)
+            except ValueError:
+                runs, wu = 0, 0
+            pts = expected_points({kk: strs[kk].get()
+                                   for kk in ("pp", "tg", "depth", "concurrency")})
+            two = 2 if bools["prefix_caching"].get() else 1
+            est.configure(text=(f"测试点 {pts} 个 × {runs} 轮 = {pts * runs * two} 次请求"
+                                f"（缓存命中两阶段 ×2 已计入；另加校准与延迟探测约 {2 + 4 + wu * pts} 次）"))
+
+        for kk in ("pp", "tg", "depth", "concurrency", "runs", "warmup_runs"):
+            strs[kk].trace_add("write", update_est)
+
+        # ------------------------------------------------ 缓存与请求控制 ----
+        sec("缓存与请求控制")
+        r0 = R[0]
+        flags = (
+            ("prefix_caching", "--enable-prefix-caching (缓存命中)"),
+            ("no_cache", "--no-cache (排除缓存命中)"),
+            ("exact_tg", "--exact-tg (固定输出长度, 非 vLLM 可能无效)"),
+            ("skip_coherence", "--skip-coherence (跳过一致性测试)"),
+            ("no_adapt_prompt", "--no-adapt-prompt (不自动调整 prompt 长度)"),
+            ("exit_on_fail", "--exit-on-first-fail (测试点失败即中止)"),
+            ("no_results_on_fail", "--no-results-on-fail (有失败则不写结果)"),
+            ("wait_port", "运行前等待服务端口(最多约2分钟)"))
+        for i, (key, label) in enumerate(flags):
+            add_chk(r0 + i // 2, i % 2, label, key,
+                    default=True if key == "exact_tg" else False)
+        bools["prefix_caching"].trace_add("write", update_est)
+        update_est()
+        R[0] += (len(flags) + 1) // 2
+        for note in ("--no-warmup 已移除: 它跳过的是开局的全局校准预热(2 次请求), 不是每测试点预热。",
+                     "每形状预热由 warmup-runs 控制(默认 0); 只要 --adapt-prompt 开启, --no-warmup 也不生效。"):
+            ttk.Label(frm, text=note, style="Dim.TLabel").grid(
+                row=R[0], column=0, columnspan=4, sticky="w", pady=(1, 0))
+            R[0] += 1
+        add_row("前置命令(运行该预设前执行):", "pre_cmd", EW + 12)
+        add_row("后置命令(每次测试后执行, 如清缓存):", "post_cmd", EW + 12)
+        add_row("extra-body(额外请求字段, 逗号分隔):", "extra_body", EW + 12)
+
+        # ------------------------------------------------ 语料与输出 ----
+        sec("语料与输出")
+        add_row("语料文件或 URL(留空 = data\\book.txt):", "book_url", EW)
+        ttk.Label(frm, text="输出格式:").grid(row=R[0], column=0, sticky="w", padx=(0, 8))
+        v = tk.StringVar(value=str(cfg.get("format", "json")))
+        strs["format"] = v
+        ttk.Combobox(frm, textvariable=v, width=10, state="readonly",
+                     values=["json", "md", "csv"]).grid(row=R[0], column=1, sticky="w")
+        R[0] += 1
+        r0 = R[0]
+        add_chk(r0, 0, "--save-total-throughput-timeseries", "ts_total")
+        add_chk(r0, 1, "--save-all-throughput-timeseries", "ts_all")
+        add_chk(r0 + 1, 0, "启用该预设(未启用则批量运行时跳过)", "enabled", default=True)
+        R[0] += 2
         frm.columnconfigure(1, weight=1)
 
+        def collect():
+            out = {}
+            for kk in ("name", "pre_cmd", "post_cmd", "base_url", "api_key", "model",
+                       "served_model_name", "tokenizer", "pp", "tg", "depth",
+                       "concurrency", "runs", "warmup_runs", "extra_body", "book_url"):
+                out[kk] = strs[kk].get().strip()
+            out["latency_mode"] = strs["latency_mode"].get()
+            out["format"] = strs["format"].get()
+            for kk, bv in bools.items():
+                out[kk] = bool(bv.get())
+            return out
+
+        def preview():
+            p = collect()
+            p["result_name"] = p["name"] or "预设"
+            cmd = "python\\python.exe " + " ".join(build_argv(p))
+            messagebox.showinfo("命令预览", cmd, parent=w)
+
         def ok():
-            nm = strs["name"].get().strip()
-            if not nm:
+            p = collect()
+            if not p["name"]:
                 messagebox.showwarning("预设", "名称不能为空", parent=w)
                 return
-            out = {k: strs[k].get() for k in ("name", "pre_cmd", "base_url", "model",
-                                              "pp", "tg", "depth", "concurrency", "runs")}
-            out["latency_mode"] = strs["latency_mode"].get()
-            for k, bv in bools.items():
-                out[k] = bool(bv.get())
+            if not p["base_url"].startswith(("http://", "https://")):
+                messagebox.showwarning("预设", "base-url 需以 http:// 或 https:// 开头", parent=w)
+                return
+            bad = []
+            for key in ("pp", "tg", "depth", "concurrency", "runs", "warmup_runs"):
+                for val in p[key].split():
+                    if not val.isdigit():
+                        bad.append(f"{key}: 「{val}」 不是整数")
+            if bad:
+                messagebox.showwarning("预设", "参数有误:\n" + "\n".join(bad), parent=w)
+                return
+            if p["format"] != "json":
+                messagebox.showwarning(
+                    "预设", "对比页只能读取 json 结果。选 md/csv 会导出该格式，"
+                    "但这份结果不会出现在对比页文件列表里。仍要保存？", parent=w)
             if new:
-                out.setdefault("warmup_runs", "")
-                self.batch.append(out)
+                self.batch.append(p)
             else:
                 cur = dict(self.batch[idx])
-                cur.update(out)
+                cur.update(p)
                 self.batch[idx] = cur
             try:
                 self._store_batch()
@@ -1220,6 +1874,7 @@ class BenchGUI:
         btns.pack(fill="x", padx=10, pady=(4, 10))
         ttk.Button(btns, text="保存", width=10, style="Accent.TButton", command=ok).pack(side="right")
         ttk.Button(btns, text="取消", width=10, command=w.destroy).pack(side="right", padx=(0, 8))
+        ttk.Button(btns, text="预览命令", width=11, command=preview).pack(side="left")
         # 弹窗居中(默认会出现在左上角)
         w.update_idletasks()
         x = max(0, (w.winfo_screenwidth() - w.winfo_reqwidth()) // 2)
@@ -1227,6 +1882,16 @@ class BenchGUI:
         w.geometry(f"+{x}+{y}")
         w.grab_set()
         style_dialog(w)
+
+    def _pick_tokenizer(self, target_var):
+        """选择本地 tokenizer.json 并填入 tokenizer 框。"""
+        path = filedialog.askopenfilename(
+            title="选择 tokenizer.json",
+            initialdir=GREEN_DIR,
+            filetypes=[("tokenizer json", "*.json"), ("所有文件", "*.*")])
+        if path:
+            target_var.set(path)
+            self.status.configure(text=f"tokenizer: {path}")
 
     # ------------------------------------------------ 查询服务端模型名 ----
 
@@ -1320,7 +1985,7 @@ class BenchGUI:
             messagebox.showwarning("预设", "该预设没有名称(结果文件名)")
             return
         cfg["result_name"] = name
-        cfg["format"] = "json"
+        cfg.setdefault("format", "json")
         self._set_running(True)
         self.status.configure(text=f"运行预设 {name}…")
         threading.Thread(target=self._preset_run_thread, args=(cfg,), daemon=True).start()
@@ -1352,8 +2017,20 @@ class BenchGUI:
         else:
             code = -1
             logf.close()
-        saved = os.path.basename(cfg.get("result_path") or f"{name}.json")
-        msg = f"预设 {name} 完成, 已存 results\\{saved}" if code == 0 \
+        rp = cfg.get("result_path")
+        saved = os.path.relpath(rp, RESULTS_DIR) if rp else f"{name}.json"
+        note = ""
+        if code == 0 and rp and rp.lower().endswith(".json"):
+            try:
+                with open(rp, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                got = len(data.get("benchmarks", []))
+                want = expected_points(cfg) * (2 if cfg.get("prefix_caching") else 1)
+                note = (f"，测到 {got} 个测试点(预期 {want})" if got < want
+                        else f"，{got} 个测试点全部完成")
+            except (OSError, ValueError):
+                pass
+        msg = f"预设 {name} 完成, 已存 results\\{saved}{note}" if code == 0 \
             else f"预设 {name} 失败(退出码 {code})"
         self.q.put(("exit", code, msg, logpath))
         return code
@@ -1367,17 +2044,22 @@ class BenchGUI:
         if not sel:
             messagebox.showinfo("预设", "请先选中要批量运行的预设(可按住 Ctrl 多选)")
             return
-        targets = []
+        targets, skipped = [], 0
         for cid in sel:
             i = self.bt_tree.index(cid)
             if 0 <= i < len(self.batch):
-                targets.append(dict(self.batch[i]))
+                c = dict(self.batch[i])
+                if c.get("enabled", True):
+                    targets.append(c)
+                else:
+                    skipped += 1
         if not targets:
-            messagebox.showinfo("预设", "没有可运行的预设")
+            messagebox.showinfo("预设", "选中的预设均未启用(编辑面板里勾选「启用该预设」)")
             return
         self._set_running(True)
         self.batch_mode = True
-        self.status.configure(text=f"批量运行选中的 {len(targets)} 个预设…")
+        extra = f"，跳过 {skipped} 个未启用" if skipped else ""
+        self.status.configure(text=f"批量运行选中的 {len(targets)} 个预设…{extra}")
         threading.Thread(target=self._batch_run_thread, args=(targets,), daemon=True).start()
 
     def _batch_run_thread(self, targets):
@@ -1389,7 +2071,7 @@ class BenchGUI:
                 self.q.put(("bstat", f"批量 {i+1}/{len(targets)}: 预设缺少名称, 已跳过"))
                 continue
             cfg["result_name"] = name
-            cfg["format"] = "json"
+            cfg.setdefault("format", "json")
             code = self._preset_run_thread(cfg)
             if code != 0:
                 self.q.put(("bstat", f"批量中止: 预设 {name} 失败(退出码 {code}), 剩余 {len(targets)-i-1} 个未运行"))
@@ -1454,6 +2136,13 @@ def main():
         if dpi and dpi > 96:
             root.tk.call('tk', 'scaling', dpi / 96.0)
     except Exception:
+        pass
+    try:
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+        n = migrate_legacy_results()
+        if n:
+            print(f"[迁移] 已把 {n} 个旧结果文件按模型名移入 results\\<模型>\\ 子目录")
+    except OSError:
         pass
     BenchGUI(root)
     root.mainloop()

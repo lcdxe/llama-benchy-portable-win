@@ -28,20 +28,20 @@ llama-benchy 的特点：
 
 ## 二、绿色便携版如何运行
 
-本目录自包含 Python 运行时，**无需安装、无需联网、不写 C 盘**。
+本目录自包含 Python 运行时，**无需安装、无需联网、不写系统盘**。
 
 ```bat
-:: 方式一：双击现成的 bat（已含端口等待逻辑）
-GUI.bat            :: tkinter 控制台（推荐入口）
-run.bat            :: 命令行方式，含默认参数
-bootstrap.bat      :: 纯 clone 用户一次性装依赖（需联网，建本目录 .venv）
+:: 方式一：双击现成的入口
+GUI.bat        :: 图形界面（推荐）
+run.bat        :: 命令行方式，单流速度测试（pp512/tg512，depth 512/4096/8096）
+bootstrap.bat  :: 纯 clone 用户一次性装依赖（需联网，建本目录 .venv）
 
 :: 方式二：手动拼参数（在本目录下执行 cmd）
 set PYTHONPATH=%cd%
-python\python.exe -m llama_benchy --base-url http://127.0.0.1:8080/v1 --model qwen [其他参数]
+python\python.exe -m llama_benchy --base-url http://127.0.0.1:8080/v1 --model my-model [其他参数]
 ```
 
-前提：推理服务已在 `127.0.0.1:8080` 就绪。bat 启动前会**每 2 秒探测一次端口，最多等约 2 分钟**，超时才报错退出。
+前提：推理服务已在本机 8080 端口就绪。入口脚本启动前会**每 2 秒探测一次端口，最多等约 2 分钟**，超时才报错退出。
 
 ---
 
@@ -55,7 +55,7 @@ python\python.exe -m llama_benchy --base-url http://127.0.0.1:8080/v1 --model qw
 | `--api-key` | `EMPTY` | 接口 API Key。本地服务一般不需要改 |
 | `--model` | 自动检测 | 用于基准测试的模型名。不指定时尝试从端点 `/models` 接口自动检测（取第一个） |
 | `--served-model-name` | 同 `--model` | 实际 API 请求中使用的模型名。当服务端注册名与 `--model` 不一致时用（如 vLLM 的 `--served-model-name`） |
-| `--tokenizer` | 同 `--model` | 用于统计 token 数的 tokenizer：HF 模型名或**本地路径**。离线环境下非 HF 名称（如 `my-model`）会自动回退到内置 gpt2 tokenizer（近似值，warmup 差值会补偿 chat 模板开销）；要精确的模型 token 计数请传 `--tokenizer <该模型的 tokenizer.json 路径>` |
+| `--tokenizer` | 同 `--model` | 用于统计 token 数的 tokenizer：HF 模型名或**本地路径**。绿色便携版离线环境下非 HF 名称（如 `my-model`）会自动回退到内置 gpt2 tokenizer（近似值，warmup 差值会补偿 chat 模板开销）；要精确的 Qwen token 计数请传 `--tokenizer <qwen tokenizer.json 的路径>` |
 
 ### 3.2 测试矩阵（核心参数）
 
@@ -189,7 +189,7 @@ tg32  (c2)    t/s(total)=111.3 t/s(req)=56.2     ← 合计解码吞吐 vs 单�
 |---|---|---|
 | Python 运行时 | uv / venv 安装 | 目录内置完整 CPython 3.12 + 依赖，自包含 |
 | 书籍语料 | 联网下载 Gutenberg《福尔摩斯》 | **默认读本地 `data\book.txt`**（可编辑）；传 URL 才联网 |
-| tokenizer | HF 名称走网络下载 | 非 HF 名称（如 `my-model`）**离线回退到内置 gpt2 tokenizer**（近似计数 + warmup 差值补偿）；要精确计数用 `--tokenizer <本地路径>` |
+| tokenizer | HF 名称走网络下载 | 非 HF 名称（如 `my-model`）**离线回退到内置 gpt2 tokenizer**（近似计数 + warmup 差值补偿）；要精确 Qwen 计数用 `--tokenizer <本地路径>` |
 | 结果文件 | 同左 | 不带 `--save-result` 时只打印到终端，**不写任何文件** |
 | 环境变量 | — | bat 内已隔离：禁代理、`HF_HUB_OFFLINE=1`、`HF_HOME` 指向目录内 `.hf`，全程不写 C 盘 |
 | CLI 参数集 | main 分支 | **完全一致**（含 `--exact-tg`、`--emit-progress`），测试矩阵/指标算法未做任何修改 |

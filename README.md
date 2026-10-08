@@ -1,259 +1,279 @@
-# llama-benchy — Offline Self-Contained Portable Edition
+# llama-benchy — 离线自包含便携版（Windows x64）
 
-llama-bench style benchmarking tool for **any OpenAI-compatible endpoint**
-(llama.cpp, vLLM, SGLang, ...), packaged as a **fully self-contained, no-install,
-offline** bundle for Windows x64.
+面向**任意 OpenAI 兼容端点**（llama.cpp、vLLM、SGLang 等）的 llama-bench 风格基准测试工具，
+打包为 Windows x64 的**完全自包含、免安装、离线**便携包。
 
-- **No install** — the portable bundle ships its own CPython 3.12 + all dependencies.
-- **No network** — tokenizer, corpus and model-name validation are all local.
-- **No system-drive writes** — everything the tool writes stays inside its own folder.
-- Copy the folder anywhere, double-click `GUI.bat`, done.
+![GUI 预设页](docs/screenshots/gui-presets.png)
 
-Upstream project: [eugr/llama-benchy](https://github.com/eugr/llama-benchy).
-This fork changes **only the offline/portable behaviour** — the test matrix, the
-metrics and the CLI surface are identical to upstream `main`.
+- **免安装** —— 便携包自带 CPython 3.12 与全部依赖。
+- **不联网** —— tokenizer、语料、模型名校验全部本地化。
+- **不写系统盘** —— 工具写入的一切都在自己目录内。
+- 文件夹拷到任意位置，双击 `GUI.bat` 即可。
 
-> Chinese documentation: [README.zh.md](README.zh.md) · full parameter reference
-> (Chinese): [docs/params.zh.md](docs/params.zh.md)
+上游项目：[eugr/llama-benchy](https://github.com/eugr/llama-benchy)。
+本分支**只改动离线/便携行为** —— 测试矩阵、指标与 CLI 参数与上游 `main` 完全一致。
+
+> **English version:** [README.en.md](README.en.md) · 完整中文参数表：[docs/params.zh.md](docs/params.zh.md)
 >
-> `README.zh.md` is a section-by-section translation of this file — keep the two in sync.
-> Keep personal details (your model name, local paths, benchmark runs on your own machine)
-> out of both files.
+> `README.en.md` 是本文件的逐节对照译文，两份要同步维护。
+> 不要把个人环境信息（自己的模型名、本机路径、自己机器上的跑测数据）写进任何一份文档。
 
 ---
 
-## Why this tool
+## 为什么用这个工具
 
-`llama-bench` (bundled with llama.cpp) only measures llama.cpp itself and calls the
-C++ engine directly, so it does not reflect what a real API client sees. vLLM's own
-benchmark tool measures TTFT as "first data chunk" rather than "first usable token",
-and random prompts hit the prefix cache, which inflates prompt-processing numbers.
+`llama-bench`（llama.cpp 自带）只能测 llama.cpp 自身，且直接调用 C++ 引擎，
+所以它反映不了真实 API 客户端看到的数字。vLLM 自带的 benchmark 工具把 TTFT
+统计成"第一个数据块"而不是"第一个可用 token"，而且随机 prompt 会命中前缀缓存，
+使 prompt 处理速度虚高。
 
-llama-benchy:
+llama-benchy：
 
-- measures **prompt processing (pp)** and **token generation (tg)** separately at each
-  **context depth**;
-- can measure pp **on top of an already cached context** (two-phase prefix-cache test);
-- reports `ttfr`, `est_ppt` and end-to-end `ttft`;
-- counts tokens with a real tokenizer, correctly handling multi-token blocks from
-  MTP / speculative decoding;
-- uses real book text as the prompt corpus (better for spec-decoding models than
-  random tokens).
+- 在每个**上下文深度**下分别测量 **prompt 处理速度（pp）** 和 **token 生成速度（tg）**；
+- 可以测量**已缓存上下文之上**的 prompt 处理速度（前缀缓存两阶段测试）；
+- 报告 `ttfr`、`est_ppt` 和端到端 `ttft`；
+- 用真实 tokenizer 统计 token 数，正确处理 MTP / 投机解码的多 token 块；
+- 用真实书籍文本作为 prompt 语料（比随机 token 更适合 spec-decoding / MTP 模型）。
 
-Currently only `/v1/chat/completions` is benchmarked.
+当前只测 `/v1/chat/completions`。
 
 ---
 
-## Quick start
+## 快速开始
 
-### Option A — portable bundle (Windows x64, nothing to install)
+### 方式 A — 便携包（Windows x64，免安装）
 
-1. Download the portable zip from [Releases](../../releases) and unpack it anywhere.
-2. Start your inference server (e.g. llama.cpp on `127.0.0.1:8080`).
-3. Double-click `GUI.bat` (recommended) or `run.bat`.
+1. 从 [Releases](../../releases) 下载便携 zip，解压到任意位置。
+2. 启动推理服务（例如 llama.cpp 监听 `127.0.0.1:8080`）。
+3. 双击 `GUI.bat`（推荐）或 `run.bat`。
 
-The bundle layout is:
+便携包结构：
 
 ```
 llama-benchy-portable/
-├── GUI.bat                 # tkinter control panel (recommended entry point)
-├── run.bat                 # command-line run with default parameters
-├── gui/                    # GUI source (tkinter, stdlib only)
-├── python/                 # bundled CPython 3.12 + site-packages  (not in git)
-├── llama_benchy/           # tool source
-├── data/book.txt           # test corpus (replace with any long UTF-8 text)
-├── .hf/  .tmp/  results/   # created at runtime, inside this folder only
+├── GUI.bat                 # tkinter 控制台（推荐入口）
+├── run.bat                 # 命令行方式，含默认参数
+├── gui/                    # GUI 源码（tkinter，仅标准库）
+├── python/                 # 内置 CPython 3.12 + site-packages（不入库）
+├── llama_benchy/           # 工具源码
+├── data/book.txt           # 测试语料（可换成任意长 UTF-8 文本）
+├── .hf/  .tmp/  results/   # 运行时生成，只写在本目录内
 ```
 
-### Option B — plain Python install
+### 方式 B — 普通 Python 安装
 
 ```bash
 git clone https://github.com/<your-username>/llama-benchy-portable-win
 cd llama-benchy-portable-win
-pip install -r requirements.txt          # or: pip install .
+pip install -r requirements.txt          # 或: pip install .
 python -m llama_benchy --base-url http://127.0.0.1:8080/v1 --model qwen \
   --runs 2 --pp 512 --tg 512 --depth 512 4096 8096 --latency-mode generation
 ```
 
-`run.bat` and `GUI.bat` use the bundled interpreter if `python\python.exe` exists,
-otherwise they fall back to the system `python`.
+`run.bat` 和 `GUI.bat` 优先使用内置 `python\python.exe`，不存在时回退到系统 `python`。
 
 ---
 
-## GUI (recommended entry point)
+## GUI（推荐入口）
 
-Double-click `GUI.bat` — a tkinter panel with two tabs:
+双击 `GUI.bat` —— tkinter 控制台，两个标签页，零外部依赖。
 
-**Presets tab** — one preset = one server configuration (e.g. MTP3/4/5/6):
+### 预设页
 
-- built-in `mtp3`–`mtp6` templates; add/edit/copy presets, optional **pre-command**
-  (runs before the test, e.g. `restart_mtp3.bat` to kill and restart llama.cpp with
-  `--mtp 3`);
-- **Query model** button reads `{base-url}/models` to fill in the real served model name;
-- run one preset, or select several (Ctrl / click header) and run them sequentially;
-- the tool waits up to ~2 min for the server port, then runs and saves
-  `results\<name>.json`;
-- presets persist in `gui\batch.json`.
+一个预设 = 一种服务器配置（例如 MTP3/4/5/6）：
 
-**Compare tab** — merge several saved JSON results into one table:
+- 内置 `mtp3`–`mtp6` 模板；可添加 / 编辑 / 复制预设；
+- 编辑弹窗分四组：**连接与模型**、**测试矩阵**、**缓存与请求控制**、**语料与输出**，
+  底部有**预览命令**按钮（打印最终拼出的完整命令行），矩阵改动时实时显示
+  「测试点 N 个 × M 轮 = K 次请求」估算；
+- **前置命令** —— 运行该预设前执行，典型用途是切换服务器配置
+  （例如 `restart_mtp3.bat`：杀掉 llama.cpp 再以 `--mtp 3` 重启）；留空则直接测当前服务；
+- **后置命令** —— 映射上游 `--post-run-cmd`，每个测试点结束后执行（如清服务端缓存）；
+- **「查询模型」**按钮读取 `{base-url}/models`，只有一个结果时自动填入，多个时弹窗选择；
+- **启用**列（✓ / —）：未启用的预设在批量运行时跳过；
+- 单个运行，或选中多个（Ctrl 多选 / 点表头全选）后按顺序逐个执行；
+- 最多等待约 2 分钟直到服务端口就绪，然后运行并保存 `results\<模型>\<预设名>.json`
+  （同名不覆盖，自动 `_2`、`_3` …）；
+- 跑完状态栏报告**实测测试点 vs 预期**，少了就说明有测试点失败或被跳过；
+- 预设列表持久化在 `gui\batch.json`。
 
-- auto-loads everything in `results\`, checkbox multi-select, selectable baseline;
-- shows `mean ± std` and **Δ%** (green up / red down), aligned by test shape
-  (pp / tg / ctx_pp / ctx_tg);
-- line chart when depth has multiple values, otherwise grouped bar chart;
-- export the merged table to CSV.
+![预设编辑弹窗](docs/screenshots/gui-preset-editor.png)
 
-**Logging** — no log panel: status bar shows the current stage, each pre-command/test
-opens its own console window, `gui\runs\<name>_<time>.log` records command + exit code,
-and GUI crashes go to `gui\gui.log`.
+### 对比页
 
-> The GUI labels are currently Chinese-only.
+把多份已保存的 JSON 结果合并成一张表 + 一张图：
+
+- 按**模型**和**日期**两个下拉筛选（日期取自 JSON 的 `timestamp`，取不到则用文件修改时间）；
+- 复选框多选，复选框文字颜色 = 该系列在图表中的颜色；基线可选（默认第一个选中）；
+- 显示 `均值 ± 标准差` 和 **Δ%**（绿升红降），按测试形状（pp / tg / ctx_pp / ctx_tg）对齐；
+- **行族**可筛 `全部 / pp / tg / ctx_pp / ctx_tg`，默认 `tg`（只看生成阶段）；
+- 表头鼠标悬停 → 弹出该列对应的完整文件名 + 日期；双击行 → 列出该测试点在各配置下的原始数值；
+- depth 有多个值时画折线图，否则画分组柱状图；图例与轴标签按实测像素宽度排布，不会被裁切；
+- 「删除选中」先把文件备份到 `results\deleted\` 再删除（备份目录被扫描逻辑刻意跳过）；
+- 合并表可导出 CSV。
+
+![对比页](docs/screenshots/gui-compare.png)
+
+### 分辨率 / DPI 自适应
+
+窗口尺寸不是写死的：开启 DPI awareness、把 `tk scaling` 设为真实 DPI，再按屏幕逻辑分辨率
+缩放字号与 padding，最后用实测的固定开销推导窗口高度。状态栏右下角有**界面缩放**下拉
+（自动 / 小 / 标准 / 大），多显示器或特殊缩放时可手动覆盖。
+
+### 日志
+
+没有日志面板：当前阶段显示在底部状态栏，每个前置命令 / 测试弹出独立控制台窗口，
+`gui\runs\<名称>_<时间>.log` 记录命令与退出码，GUI 自身崩溃写入 `gui\gui.log`。
+
+> GUI 界面文字目前只有中文。
+> 截图是用 `tools/mock_server.py`（一个假的 OpenAI 兼容服务）配合
+> `tools/gui_screenshot.py` 生成的，不需要真实推理服务也能复现。
 
 ---
 
-## CLI parameters
+## CLI 参数
 
 ```
 python -m llama_benchy --base-url URL [options]
 ```
 
-### Connection & model
+完整中文参数表见 [docs/params.zh.md](docs/params.zh.md)，以下与英文版逐项一致。
 
-| Flag | Default | Description |
+### 连接与模型
+
+| 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--base-url` | *(required)* | OpenAI-compatible endpoint, e.g. `http://127.0.0.1:8080/v1` |
+| `--base-url` | *（必填）* | OpenAI 兼容端点，例如 `http://127.0.0.1:8080/v1` |
 | `--api-key` | `EMPTY` | API key |
-| `--model` | auto-detect | Model name; auto-detected from `/models` if omitted. Non-HF names (e.g. `my-model`) are accepted as-is |
-| `--served-model-name` | same as `--model` | Name actually used in API calls |
-| `--tokenizer` | same as `--model` | HF name **or local path**. Offline fallback: bundled `assets/gpt2_tokenizer.json`. Pass a Qwen `tokenizer.json` for exact token counts |
+| `--model` | 自动检测 | 不指定时从 `/models` 自动检测；非 HF 格式的名字（如 `my-model`）直接放行 |
+| `--served-model-name` | 同 `--model` | API 请求中实际使用的模型名 |
+| `--tokenizer` | 同 `--model` | HF 模型名**或本地路径**。离线兜底：内置 `assets/gpt2_tokenizer.json`。要精确 token 计数请传模型自己的 `tokenizer.json` |
 
-### Test matrix
+### 测试矩阵
 
-| Flag | Default | Description |
+| 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--pp` | `[2048]` | Prompt-processing token counts (list) |
-| `--tg` | `[32]` | Generation token counts (list) |
-| `--exact-tg` | off | Force exact output length (`min_tokens` + `ignore_eos`); vLLM-style fixed-OSL tests. llama.cpp does not support these fields |
-| `--depth` | `[0]` | Context depth list (tokens already in context before the prompt) |
-| `--runs` | `3` | Runs per test point; reported as mean ± std |
-| `--warmup-runs` | `0` | Discarded warmup runs per shape (also the number of generation latency probes) |
-| `--concurrency` | `[1]` | Concurrency levels (list) |
+| `--pp` | `[2048]` | prompt 处理 token 数（列表） |
+| `--tg` | `[32]` | 生成 token 数（列表） |
+| `--exact-tg` | 关 | 强制输出长度精确等于 `--tg`（`min_tokens` + `ignore_eos`），vLLM 式固定 OSL 测试；llama.cpp 不支持这两个字段 |
+| `--depth` | `[0]` | 上下文深度列表（prompt 之前已有的 token 数） |
+| `--runs` | `3` | 每个测试点跑几轮，报告 均值 ± 标准差 |
+| `--warmup-runs` | `0` | 每个形状丢弃的预热轮数（同时也是生成延迟探测次数） |
+| `--concurrency` | `[1]` | 并发级别（列表） |
 
-Shapes are combined as a Cartesian product in the order **depth → pp → tg → concurrency**.
+组合按 **depth → pp → tg → concurrency** 的层级做笛卡尔积。
 
-### Warmup & latency
+### Warmup 与延迟
 
-| Flag | Default | Description |
+| 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--latency-mode` | `api` | `api` (network only) / `generation` (network + server overhead, recommended) / `none` |
-| `--no-warmup` | off | Skip warmup (not recommended) |
-| `--skip-coherence` | off | Skip the post-warmup sanity check |
-| `--adapt-prompt` / `--no-adapt-prompt` | on | Adjust prompt length so real prompt tokens match `--pp` |
+| `--latency-mode` | `api` | `api`（仅网络）/ `generation`（网络 + 服务端开销，推荐）/ `none` |
+| `--no-warmup` | 关 | 跳过 warmup（不推荐） |
+| `--skip-coherence` | 关 | 跳过 warmup 后的一致性检查 |
+| `--adapt-prompt` / `--no-adapt-prompt` | 开 | 调整 prompt 长度使真实 prompt token 数贴近 `--pp` |
 
-### Cache & request control
+### 缓存与请求控制
 
-| Flag | Default | Description |
+| 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--enable-prefix-caching` | off | Two-phase measurement: `ctx_pp`/`ctx_tg` (cold context load) then `pp`/`tg` (hot follow-up on the cached context). Requires `--depth > 0` |
-| `--no-cache` | off | Add noise to avoid cache hits and send `cache-prompt=false` |
-| `--post-run-cmd` | — | Command run after each test (e.g. clearing the server cache) |
-| `--extra-body` | — | Extra JSON fields, `key=value` or `key:value`, comma-separated |
+| `--enable-prefix-caching` | 关 | 两阶段测量：`ctx_pp`/`ctx_tg`（冷加载上下文）→ `pp`/`tg`（在已缓存上下文上追问）。需 `--depth > 0` |
+| `--no-cache` | 关 | 加噪声避免缓存命中，并发送 `cache-prompt=false` |
+| `--post-run-cmd` | — | 每次测试后执行的命令（例如清服务端缓存） |
+| `--extra-body` | — | 额外 JSON 字段，`key=value` 或 `key:value`，逗号分隔 |
 
-### Corpus & output
+### 语料与输出
 
-| Flag | Default | Description |
+| 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--book-url` | `data/book.txt` | Local file path (default, offline) or http(s) URL |
-| `--save-result` | — | Output file path; nothing is written if omitted |
+| `--book-url` | `data/book.txt` | 本地文件路径（默认，离线）或 http(s) URL |
+| `--save-result` | — | 输出文件路径；不传则不写任何文件 |
 | `--format` | `md` | `md` / `json` / `csv` |
-| `--save-total-throughput-timeseries` | off | Per-second total throughput series (JSON only) |
-| `--save-all-throughput-timeseries` | off | Per-request throughput series (JSON only) |
-| `--emit-progress PATH` | — | JSONL progress event stream to PATH or `-` (stdout) |
+| `--save-total-throughput-timeseries` | 关 | 每秒总吞吐时间序列（仅 JSON） |
+| `--save-all-throughput-timeseries` | 关 | 每请求吞吐时间序列（仅 JSON） |
+| `--emit-progress PATH` | — | JSONL 进度事件流写到 PATH 或 `-`（标准输出） |
 
-### Error handling
+### 错误处理
 
-| Flag | Description |
+| 参数 | 说明 |
 |---|---|
-| `--exit-on-first-fail` | Stop at the first failed test point |
-| `--no-results-on-fail` | Print/save nothing; implies `--exit-on-first-fail` |
+| `--exit-on-first-fail` | 第一个测试点失败即停止 |
+| `--no-results-on-fail` | 不打印 / 不保存任何结果；隐含 `--exit-on-first-fail` |
 
 ---
 
-## Reading the results
+## 结果解读
 
-All times are **milliseconds**, values are `mean ± std`.
+所有时间单位为**毫秒**，数值为 `均值 ± 标准差`。
 
-| Column | Meaning |
+| 列 | 含义 |
 |---|---|
-| `t/s` (pp row) | Prompt processing speed = prompt tokens ÷ `est_ppt` |
-| `t/s` (tg row) | Decode speed = tokens after the first ÷ (last token − first token) |
-| `t/s (total)` / `t/s (req)` | Only when concurrency > 1: aggregate throughput / per-request average |
-| `peak t/s` | tg rows only: best 1-second window during the run |
-| `ttfr (ms)` | Time to first response chunk (may be an empty chunk); includes network latency |
-| `est_ppt (ms)` | Estimated server-side prompt processing = `ttfr − measured latency` |
-| `e2e_ttft (ms)` | Time to first **content** token — what the user actually feels |
+| `t/s`（pp 行） | prompt 处理速度 = prompt token 数 ÷ `est_ppt` |
+| `t/s`（tg 行） | 解码速度 = 首 token 之后的 token 数 ÷（末 token − 首 token） |
+| `t/s (total)` / `t/s (req)` | 仅并发 > 1 时出现：合计吞吐 / 单请求平均吞吐 |
+| `peak t/s` | 仅 tg 行：运行期间最好的 1 秒窗口 |
+| `ttfr (ms)` | 首个响应分片时间（可能是空分片），含网络延迟 |
+| `est_ppt (ms)` | 估算的服务端 prompt 处理耗时 = `ttfr − 实测延迟` |
+| `e2e_ttft (ms)` | 首个**内容** token 时间 —— 用户实际体感延迟 |
 
-**PP measurement note.** Upstream computes `est_ppt` from the first SSE chunk. Servers
-that send an empty chunk before prefill finishes (some speculative-decoding servers)
-then produce impossible numbers (100k+ t/s). This fork uses the first **real content
-token** instead. For llama.cpp / vLLM the two timestamps coincide, so results are
-unchanged; only the "early empty chunk" case is corrected. Already-saved JSON files are
-not retroactively changed — re-run to get correct PP.
+**PP 测量口径。** 上游用首个 SSE 分片计算 `est_ppt`。在 prefill 完成前就提前发空分片的服务器
+（某些投机解码服务器）会算出不可能的数值（10 万+ t/s）。本分支改用**首个真实内容 token**。
+对 llama.cpp / vLLM 两个时间戳重合，数值无影响；只修正"提前发空分片"这一种情况。
+已保存的 JSON 不会被追溯改变 —— 要拿正确 PP 需重新跑测试。
 
 ---
 
-## Portability guarantees
+## 便携性保证
 
-1. **Offline** — three network paths are localized: model-name validation (non-HF names
-   pass, HF validation failure is a warning), tokenizer (bundled `gpt2_tokenizer.json`),
-   corpus (local `data/book.txt` first).
-2. **No system-drive writes** — `HF_HOME` points to `.hf/`, cache/temp go to the folder,
-   results go to `results/`. `%USERPROFILE%` is never touched.
-3. **No proxy** — `run.bat` clears `HTTP(S)_PROXY` and sets a clean `NO_PROXY`. Some
-   environments inject `NO_PROXY` containing `[::1]`, which crashes httpx
-   (`InvalidURL: Invalid port ':1]'`).
-4. **`.bat` files must stay pure ASCII** — cmd reads them with the system ANSI codepage
-   (GBK on Chinese Windows); UTF-8 comments get mis-parsed as commands.
+1. **离线** —— 三处可能联网的点全部本地化：模型名校验（非 HF 名放行，HF 校验失败只警告）、
+   tokenizer（内置 `gpt2_tokenizer.json`）、语料（优先本地 `data/book.txt`）。
+2. **不写系统盘** —— `HF_HOME` 指向 `.hf/`，缓存和临时文件都在本目录内，结果写入 `results/`，
+   全程不碰 `%USERPROFILE%`。
+3. **不用代理** —— `run.bat` 清空 `HTTP(S)_PROXY` 并设置干净的 `NO_PROXY`。某些环境会注入含
+   `[::1]` 的 `NO_PROXY`，导致 httpx 崩溃（`InvalidURL: Invalid port ':1]'`）。
+4. **`.bat` 必须保持纯 ASCII** —— cmd 按系统 ANSI 代码页读取（中文系统是 GBK），UTF-8 中文注释
+   会被错位解析成命令。改 bat 时注释一律用英文。
 
 ---
 
-## Repo layout
+## 仓库结构
 
 ```
 llama-benchy-portable-win/
-├── README.md / README.zh.md
+├── README.md / README.en.md              # 中文为主，英文为对照译文
 ├── LICENSE
 ├── pyproject.toml / requirements.txt
-├── GUI.bat / run.bat / bootstrap.bat   # ASCII-only launchers
-├── llama_benchy/                     # tool source + assets/gpt2_tokenizer.json
-├── gui/                              # tkinter GUI (bench_gui.py, ui_theme.py)
-├── docs/params.zh.md                 # full Chinese parameter reference
-├── data/book.txt                     # offline corpus
-└── tools/wait_port.py                # port wait used by run.bat
+├── GUI.bat / run.bat / bootstrap.bat     # 纯 ASCII 入口
+├── llama_benchy/                         # 工具源码 + assets/gpt2_tokenizer.json
+├── gui/                                  # tkinter GUI（bench_gui.py, ui_theme.py）
+├── docs/params.zh.md                     # 完整中文参数表
+├── docs/screenshots/                     # GUI 截图
+├── data/book.txt                         # 离线语料
+└── tools/                                # wait_port.py / mock_server.py / gui_screenshot.py / make_portable_zip.ps1
 ```
 
-Runtime artifacts (`results/`, `.hf/`, `.tmp/`, `data/cache/`, `gui/runs/`,
-`gui/batch.json`, `gui/gui.log`) and the bundled `python/` runtime are git-ignored;
-the portable bundle is distributed as a Release asset.
+运行时产物（`results/`、`.hf/`、`.tmp/`、`data/cache/`、`gui/runs/`、`gui/batch.json`、
+`gui/gui.log`）和内置 `python/` 运行时都被 `.gitignore` 排除；便携包作为 Release 资产分发。
 
 ---
 
-## Differences from upstream
+## 与上游的差异
 
-| Item | Upstream | This edition |
+| 项 | 上游 | 本版本 |
 |---|---|---|
-| Python runtime | uv / venv | Bundled CPython 3.12 in the portable zip |
-| Book corpus | Downloads from Project Gutenberg | Local `data/book.txt` by default |
-| Tokenizer | Downloads from HF | Bundled gpt2 fallback; local path supported |
-| Writes | System cache dirs | Only inside the bundle folder |
-| PP measurement | First SSE chunk | First real content token (fixes inflated PP) |
-| Warmup | 1 run per shape | 0 by default (`--warmup-runs 1` restores old behaviour) |
-| CLI | `main` | Identical |
+| Python 运行时 | uv / venv | 便携 zip 内置 CPython 3.12 |
+| 书籍语料 | 从 Project Gutenberg 下载 | 默认读本地 `data/book.txt` |
+| tokenizer | 从 HF 下载 | 内置 gpt2 兜底；支持本地路径 |
+| 写入位置 | 系统缓存目录 | 只在便携包目录内 |
+| PP 测量 | 首个 SSE 分片 | 首个真实内容 token（修正虚高 PP） |
+| Warmup | 每形状 1 轮 | 默认 0（`--warmup-runs 1` 恢复旧行为） |
+| 结果保存 | 手动指定单个文件 | `results\<模型>\<预设名>.json`，同名自动 `_2`、`_3` |
+| 图形界面 | 无 | tkinter 预设 / 对比面板（界面文字为中文） |
+| 分辨率适配 | 固定窗口 | DPI awareness + 按屏幕逻辑分辨率缩放 |
+| CLI | `main` | 完全一致 |
 
 ---
 
-## License
+## 许可证
 
-MIT — see [LICENSE](LICENSE). Core tool copyright belongs to the upstream
-[llama-benchy](https://github.com/eugr/llama-benchy) author; the offline/portable
-changes are the only addition here.
+MIT — 见 [LICENSE](LICENSE)。核心工具版权归上游
+[llama-benchy](https://github.com/eugr/llama-benchy) 作者；离线/便携改动是本分支唯一新增的内容。
