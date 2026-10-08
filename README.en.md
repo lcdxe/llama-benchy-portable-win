@@ -17,10 +17,6 @@ metrics and the CLI surface are identical to upstream `main`.
 
 > **Primary documentation (Chinese):** [README.md](README.md) · full Chinese
 > parameter reference: [docs/params.zh.md](docs/params.zh.md)
->
-> This file is a section-by-section translation of `README.md` — keep the two in sync.
-> Keep personal details (your model name, local paths, benchmark runs on your own machine)
-> out of both files.
 
 ---
 

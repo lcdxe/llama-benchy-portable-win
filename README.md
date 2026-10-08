@@ -14,9 +14,6 @@
 本分支**只改动离线/便携行为** —— 测试矩阵、指标与 CLI 参数与上游 `main` 完全一致。
 
 > **English version:** [README.en.md](README.en.md) · 完整中文参数表：[docs/params.zh.md](docs/params.zh.md)
->
-> `README.en.md` 是本文件的逐节对照译文，两份要同步维护。
-> 不要把个人环境信息（自己的模型名、本机路径、自己机器上的跑测数据）写进任何一份文档。
 
 ---
 
@@ -231,7 +228,7 @@ python -m llama_benchy --base-url URL [options]
 3. **不用代理** —— `run.bat` 清空 `HTTP(S)_PROXY` 并设置干净的 `NO_PROXY`。某些环境会注入含
    `[::1]` 的 `NO_PROXY`，导致 httpx 崩溃（`InvalidURL: Invalid port ':1]'`）。
 4. **`.bat` 必须保持纯 ASCII** —— cmd 按系统 ANSI 代码页读取（中文系统是 GBK），UTF-8 中文注释
-   会被错位解析成命令。改 bat 时注释一律用英文。
+   会被错位解析成命令。
 
 ---
 
